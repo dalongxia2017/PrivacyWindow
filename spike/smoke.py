@@ -8,6 +8,7 @@
   toggle    --disable / --enable / --toggle 即时生效（量延迟）
   settings  设置窗口能打开且尺寸正确、没有 Auto Layout 冲突、菜单栏图标存在
   drift     靶窗口每 1.2s 跳一个位置，覆盖层要跟着走（量延迟）
+  slide     靶窗口自己连续移动（模拟切换桌面、吸附动画）：覆盖层先淡出不追，停下后回来
   low power 低性能模式：靶上盖的是暗色遮罩（还能看出条纹，但明显变暗），鼠标移上去仍变清晰
   screen off 设置里关掉的显示器完全不覆盖
   stage     台前调度开启（用 --set stageManager=1 模拟）时暂停覆盖
@@ -336,6 +337,58 @@ def phase_drift():
            f"moves={moves} stuck={stuck} covered≤{slowest * 1000:.0f}ms, last clear frame≤{worst * 1000:.0f}ms (含截图耗时)")
 
 
+def phase_slide():
+    """窗口自己连续移动时（切换桌面、调度中心、最小化、吸附动画），覆盖层不去追：
+    先淡出，等窗口停下再按新布局回来。
+
+    鼠标键按着、光标跟着走才算“用户在拖”；probe3 自己挪窗口时两者都没有，程序应判定为系统动画。
+    跑测试时如果你正好按着鼠标键，这一项会失败，松开再跑即可。
+    """
+    winid = build_tool("winid")
+    app = start_app(["--trace"], log=open(os.path.join(ROOT, "build/app-slide.out"), "w"))
+    time.sleep(2.0)
+    target = subprocess.Popen([PROBE, "baseline", "--stay", "--slide"], stdout=subprocess.PIPE, text=True)
+    TARGET_PID[0] = target.pid
+    during, after, traced = None, None, False
+    try:
+        while True:
+            line = target.stdout.readline()
+            if line == "" or line.startswith("slide start"):
+                break
+        time.sleep(0.35)                                  # 进动画 3 帧 + 淡出 150ms 之后
+        inner = inner_rect(winid, target.pid, margin=60)
+        if inner:
+            during = variance(inner)
+        while True:
+            line = target.stdout.readline()
+            if line == "" or line.startswith("slide end"):
+                break
+        time.sleep(1.0)                                   # 停 6 帧 + 淡入 150ms 之后
+        inner = inner_rect(winid, target.pid, margin=20)
+        if inner:
+            after = variance(inner)
+    finally:
+        stop(target)
+        stop(app)
+    log = os.path.join(ROOT, "build/app-slide.out")
+    if os.path.exists(log):
+        traced = "anim=1" in open(log, encoding="utf-8", errors="replace").read()
+    hidden = during is not None and during >= CLEAR_MIN
+    back = after is not None and after < BLURRED_MAX
+    record("system animation hides overlay", hidden and traced,
+           f"moving: variance {during if during is None else int(during)} (clear≥{CLEAR_MIN}), trace={traced}")
+    record("overlay returns after animation", back, f"stopped: variance {after if after is None else int(after)} (<{BLURRED_MAX})")
+
+
+def inner_rect(winid, pid, margin=20):
+    """靶窗口此刻的位置（winid 现查）往里缩 margin 后的截图区。"""
+    listing = subprocess.run([winid, str(pid)], capture_output=True, text=True).stdout.split()
+    if len(listing) < 5:
+        return None
+    x, y, w, h = map(int, listing[1:5])
+    return f"{x + margin},{y + margin + 32},{w - 2 * margin},{h - 2 * margin - 60}"
+
+
 def main():
     build_tool("probe3")
     build_tool("cover")
@@ -369,6 +422,7 @@ def main():
     finally:
         stop(target)
     phase_drift()
+    phase_slide()
 
     trace = open(os.path.join(ROOT, "build/app.out"), encoding="utf-8", errors="replace").read()
     record("overlay ignores mouse", "overlayIgnoresMouse=true" in trace)

@@ -11,6 +11,17 @@ final class AppController {
     private var registeredHotKey: HotKey?
     private let stageMonitor = StageManager.Monitor()
     private var timer: Timer?
+    /// 开启时用显示器的刷新节拍（CADisplayLink）代替 Timer：每一帧刚刷完就取窗口位置，
+    /// 覆盖层跟着窗口走时不会一会儿落后一帧、一会儿落后两帧（那是“拖动时一顿一顿”的来源之一）。
+    private var displayLink: CADisplayLink?
+    private var lastTick: TimeInterval = 0
+    /// `--set clock=timer`：退回 Timer 轮询（排查用）
+    private var useTimerClock = false
+    /// 最高每秒取 60 次窗口位置（120 Hz 的屏上隔帧取，省一半 CPU）
+    static let minTickInterval: TimeInterval = 1.0 / 60 - 0.002
+    /// 切换桌面 / 调度中心这类系统动画期间把覆盖层藏起来
+    private var motion = MotionDetector()
+    private var suppressUntil: TimeInterval = 0
 
     /// 调试/测试参数。只在命令行显式传入时生效，正常双击启动时全部为 nil / false。
     private let mouseOverride: MouseOverride?
@@ -30,6 +41,9 @@ final class AppController {
         NSWorkspace.shared.notificationCenter.addObserver(
             self, selector: #selector(screensChanged),
             name: NSApplication.didChangeScreenParametersNotification, object: nil)
+        NSWorkspace.shared.notificationCenter.addObserver(
+            self, selector: #selector(spaceChanged),
+            name: NSWorkspace.activeSpaceDidChangeNotification, object: nil)
         // 其它进程（`PrivacyWindow --toggle` 等）发来的命令
         DistributedNotificationCenter.default().addObserver(
             self, selector: #selector(remoteCommand(_:)),
@@ -43,11 +57,42 @@ final class AppController {
         hotKeys.onPress = { [weak self] in self?.settings.toggleEnabled() }
         applyDebugOverrides()
         registerHotKey(alertOnError: false)
-        scheduleTimer()
+        restartClock()
         if selfcheck { scheduleSelfcheck() }
     }
 
     var pollInterval: TimeInterval { settings.enabled ? 1.0 / 60 : 0.25 }
+
+    /// 按当前状态选节拍来源：开着 → 显示器刷新节拍；关着 → 4 Hz 的 Timer（只看有没有被重新打开）。
+    private func restartClock() {
+        if settings.enabled, !useTimerClock, startDisplayLink() {
+            timer?.invalidate()
+            timer = nil
+            return
+        }
+        displayLink?.isPaused = true
+        scheduleTimer()
+    }
+
+    private func startDisplayLink() -> Bool {
+        if let link = displayLink {
+            link.isPaused = false
+            return true
+        }
+        guard let screen = NSScreen.screens.first else { return false }
+        let link = screen.displayLink(target: self, selector: #selector(displayFire(_:)))
+        link.add(to: .main, forMode: .common)
+        displayLink = link
+        return true
+    }
+
+    /// 显示器每刷一帧调用一次（主线程）。120 Hz 的屏上隔帧取，见 `minTickInterval`。
+    @objc private func displayFire(_ link: CADisplayLink) {
+        let now = CACurrentMediaTime()
+        guard now - lastTick >= Self.minTickInterval else { return }
+        lastTick = now
+        tick(now: now)
+    }
 
     private func scheduleTimer() {
         timer?.invalidate()
@@ -55,6 +100,8 @@ final class AppController {
         RunLoop.main.add(timer, forMode: .common)
         self.timer = timer
     }
+
+    var clockName: String { displayLink != nil && useTimerClock == false ? "displayLink" : "timer" }
 
     func showSettings() {
         settingsWindow.show()
@@ -106,6 +153,7 @@ final class AppController {
                 let xy = value.split(separator: ";").compactMap { Double($0) }
                 if xy.count == 2 { settings.disabledScreens += Self.screen(at: CGPoint(x: xy[0], y: xy[1])).map { [$0] } ?? [] }
             case "stageManager": stageManagerOverride = flag
+            case "clock": useTimerClock = value == "timer"
             default: break
             }
         }
@@ -144,6 +192,7 @@ final class AppController {
                 "selfcheck: hotkey \(self.hotKeyState)",
                 "selfcheck: launchAtLogin \(self.launchAtLoginState)",
                 "selfcheck: screens \(self.settingsWindow.debugScreenChecks())",
+                "selfcheck: clock \(self.clockName)",
             ]
             if let content = self.settingsWindow.window.contentView, content.subviews.first is NSStackView {
                 let fit = content.fittingSize
@@ -177,7 +226,12 @@ final class AppController {
             overlays.hideAll()
         }
         registerHotKey(alertOnError: true)
-        scheduleTimer()
+        restartClock()
+    }
+
+    /// 切换桌面：动画期间窗口在滑，覆盖层不去追；动画结束（这个通知）后再稍微等一下，按新桌面的布局出来。
+    @objc private func spaceChanged() {
+        suppressUntil = CACurrentMediaTime() + 0.1
     }
 
     @objc private func screensChanged() {
@@ -201,10 +255,16 @@ final class AppController {
     func tick(now: TimeInterval = CACurrentMediaTime()) -> CGWindowID? {
         guard settings.enabled else { return nil }
         let mouse = mouseOverride?.current ?? Geometry.nsToCG(NSEvent.mouseLocation, mainHeight: Geometry.mainCG.height)
-        let windows = WindowSnapshot.fetch(ownPID: ProcessInfo.processInfo.processIdentifier,
-                                           whitelist: Set(settings.whitelist), blacklist: Set(settings.blacklist),
-                                           invertWhitelist: settings.invertWhitelist)
+        let frame = WindowSnapshot.fetch(ownPID: ProcessInfo.processInfo.processIdentifier,
+                                         whitelist: Set(settings.whitelist), blacklist: Set(settings.blacklist),
+                                         invertWhitelist: settings.invertWhitelist)
+        let windows = frame.windows
         let existing = Set(windows.map(\.id))
+
+        // 切换桌面 / 调度中心 / 最小化这类系统动画：窗口连续好几帧在动，而鼠标没在拖。
+        // 这段时间把覆盖层淡出，不去追（追不上，看着一卡一卡）；动画停下后下一帧按新布局回来。
+        let animating = motion.update(windows: windows, mouse: mouse, buttonPressed: NSEvent.pressedMouseButtons != 0,
+                                      force: now < suppressUntil, now: now)
 
         var candidate = HitTest.candidate(windows: windows, at: mouse)?.id
         // 鼠标在桌面 / 菜单栏 / Dock / 黑名单窗口上：保持上一个焦点窗口清晰
@@ -223,10 +283,14 @@ final class AppController {
                                                pauseOnFullscreen: settings.pauseOnFullscreen,
                                                stageManagerActive: stageManagerOn,
                                                disabledScreens: Set(settings.disabledScreens))
-        overlays.update(windows: windows, focus: resolver.current, pausedScreens: paused)
+        if animating {
+            overlays.hideAll()
+        } else {
+            overlays.update(windows: windows, focus: resolver.current, pausedScreens: paused, clear: frame.clear)
+        }
         if trace {
             traceFrame(mouse: mouse, candidate: candidate, paused: paused)
-            traceChanges(now: now, covered: overlays.coveredWindowIDs, paused: paused)
+            traceChanges(now: now, covereded: overlays.coveredWindowIDs, paused: paused, animating: animating)
         }
         return resolver.current
     }
@@ -274,8 +338,8 @@ final class AppController {
     /// 用来查“窗口移动时覆盖层为什么闪”。每 15 帧那行太稀，抓不到一两帧的变化。
     private var lastTraceState: String?
 
-    private func traceChanges(now: TimeInterval, covered: Set<CGWindowID>, paused: Set<CGDirectDisplayID>) {
-        let state = "focus=\(resolver.current.map(String.init) ?? "nil") covered=\(covered.sorted()) paused=\(paused.sorted())"
+    private func traceChanges(now: TimeInterval, covereded: Set<CGWindowID>, paused: Set<CGDirectDisplayID>, animating: Bool) {
+        let state = "focus=\(resolver.current.map(String.init) ?? "nil") covered=\(covereded.sorted()) paused=\(paused.sorted()) anim=\(animating ? 1 : 0)\(animating ? " moving=\(motion.moving.sorted())" : "")"
         guard state != lastTraceState else { return }
         lastTraceState = state
         print(String(format: "t=%.3f ", now - traceStart) + state)

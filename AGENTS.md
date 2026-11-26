@@ -33,9 +33,9 @@ macOS 菜单栏工具：鼠标悬停的窗口保持清晰，同屏其它普通�
 |---|---|---|
 | 模糊强度 / 暗化 / 材质都可调 | 系统材质的模糊半径**不可调**，7 种材质方差都 ≤ 11 | “材质（色调）+ 暗化”两个选项；连续半径只有私有 `CAFilter` 或截屏自算 |
 | 切换动画 120–180 ms 防闪烁 | 还要**防抖**：划过窗口边缘 / 缝隙会高频切换 | 焦点判定加防抖（默认 40 ms）；旧焦点淡出与新焦点淡入并行 |
-| 跟随延迟 < 50 ms | 窗口列表一次 0.26 ms，余量很大 | 跟随时直接改 frame、不做动画；只有焦点切换做 alpha 动画 |
+| 跟随延迟 < 50 ms | 窗口列表一次 0.26 ms，余量很大 | 跟随时直接改 frame、不做动画；只有焦点切换做 alpha 动画。系统动画期间不追，先藏起来 |
 | 读窗口信息可能要录屏权限 | **不要**：id / bounds / layer / pid 都给，只有标题受限 | 不读标题 → 零权限 |
-| 监听窗口移动可能要辅助功能 | 轮询足够 | 60 Hz 轮询 |
+| 监听窗口移动可能要辅助功能 | 轮询足够 | `CADisplayLink` 对齐刷新，60 Hz 轮询 |
 | `NSVisualEffectView` 比 Core Image 省电 | 对，而且是唯一零权限方案 | 默认路径 |
 | 低性能 = 半透明暗色遮罩 | 0.45 黑遮罩方差仍 4900（清晰 16256），**文字可读** | 低性能模式暗化不低于 50 %（`lowPowerMinDim`）；它省电、助专注，但挡不住刻意凑近看 |
 
@@ -104,7 +104,7 @@ macOS 菜单栏工具：鼠标悬停的窗口保持清晰，同屏其它普通�
 
 ```bash
 ./build.sh build     # → build/PrivacyWindow.app；日志 build/build.log
-./build.sh test      # 构建 + --selftest（67 项，纯逻辑，不弹窗）
+./build.sh test      # 构建 + --selftest（93 项，纯逻辑，不弹窗）
 ./build.sh dmg       # ad-hoc 签名 + build/PrivacyWindow.dmg
 python3 spike/smoke.py --all   # 端到端，见下
 ```
@@ -129,6 +129,7 @@ python3 spike/smoke.py --all   # 端到端，见下
 - **你正在用的真实实例可能也在跑**（真实 defaults 域 `com.dalongxia2017.PrivacyWindow` 里有用户的 `pw.*`），**不要清空它**，也不要 `killall PrivacyWindow`。smoke.py 只结束自己启动的进程。
 - **读靶窗口位置要用 `build/winid` 现查**，不要信 `probe3 --drift` 通过管道打印的 `pos x y w h`：管道会积压，`readline()` 读到的往往是落后几格的旧坐标。按旧坐标截图截到的是靶窗口下面的画面（实测某个视频窗口，方差 ≈ 4000–5000），旧判定 "< 2000 就算盖住" 因此出过**假阳性**。`phase_drift` 现在的做法：读到 pos 行 → `drain()` 排空管道 → winid 现查 bounds → 采样 1 s，只认两个特征值（≈ 16256 = 靶在且没盖；< 2000 = 已盖），中间值（靶窗口不在截图区）忽略。
 - `probe3 --drift` 每 **1.2 s** 跳一格（原来是 0.6 s，太密，采样窗口会跨过下一次移动）。
+- **`phase_slide`**（`probe3 --stay --slide`）：靶窗口启动 1 s 后自己每帧挪 3 pt、共 50 帧，模拟系统动画。读到 `slide start` 后 0.35 s 截图应清晰（覆盖层已藏），读到 `slide end` 后 1 s 应重新盖住；同时要求 `build/app-slide.out` 里出现过 `anim=1`。截图前用 `inner_rect()` 现查位置；滑动中用 60 pt 边距，因为从现查到截到之间窗口又挪了 20–30 pt。**跑这一项时不要按着鼠标键**（按着 = 用户在拖，不会判成动画，这一项会失败，松开重跑即可）。
 - **靶窗口随时可能被别的窗口挡住**（跑测试时你还在用这台机器，窗口随时会被拖过来）。方差落在“既不像清晰也不像盖住”的区间（例如 ≈ 12000 / 9900）时，先用 `spike/cover.swift`（`build/cover x y w h`，前→后列出与矩形相交的窗口）看压在截图区最上层的 layer 0 窗口是谁：不是 probe3 就是环境干扰，把那个窗口挪开再跑，不要当成程序缺陷去改代码。`smoke.py` 开始时会等靶窗口露出最上层（最多 6 s），等不到会直接报是谁挡的。
 - **不要 `import spike/smoke.py`**：它底部会执行 `main()`（现在有 `__name__` 保护，但别依赖），要复用函数就单独抽出来。
 - `wait_until` 超时返回 `None`，拼接消息时不能直接 `* 1000`（崩过一次 `TypeError`）。
@@ -149,12 +150,13 @@ Sources/
 ├── OverlayManager.swift           RegionMath.subtract、RoundedMask、OverlayItem、ScreenOverlay、OverlayManager
 ├── HotKey.swift                   HotKey（键码 + Carbon 修饰键）、HotKeyController（RegisterEventHotKey）、HotKeyRecorder（改键用的录入框）
 ├── SystemState.swift              StageManager（读系统偏好 + Monitor 缓存）、LaunchAtLogin（SMAppService）
+├── MotionDetector.swift           MotionDetector（区分“用户拖着”和“系统动画”）
 ├── SettingsWindowController.swift 代码布局的设置窗口；AppListTableView（拖拽接收 .fileURL）
 ├── MenuBarController.swift        NSStatusItem + 菜单
 └── SelfTest.swift                 --selftest
 ```
 
-数据流（每帧 60 Hz，关闭时降到 4 Hz）：
+数据流（每帧 60 Hz，由 `NSScreen.displayLink` 对齐屏幕刷新驱动，120 Hz 屏上隔帧取；关闭时降到 4 Hz 的 `Timer`；`--set clock=timer` 强制用 `Timer`）：
 
 ```
 NSEvent.mouseLocation ─nsToCG─▶ HitTest.candidate(windows:at:) ─▶ candidate: CGWindowID?
@@ -163,7 +165,10 @@ candidate == nil 且 desktopBehavior == .keepLast → 沿用 resolver.current（
 FocusResolver.update(candidate:existing:now:) → resolver.current
 PausePolicy.pausedScreens(...) → Set<CGDirectDisplayID>
     （全屏窗口所在屏 ∪ 用户关掉的显示器；台前调度开着 → 全部屏）
-OverlayManager.update(windows:focus:pausedScreens:)
+MotionDetector.update(windows:mouse:buttonPressed:force:now:) → animating: Bool
+    （系统动画中 → OverlayManager.hideAll()，跳过下面一步）
+OverlayManager.update(windows:focus:pausedScreens:clear:)
+WindowSnapshot.fetch 还给出 clear：不处理但也不能盖住的窗口（见 OverlayLayout）
 ```
 
 ### 各模块要点
@@ -174,10 +179,13 @@ OverlayManager.update(windows:focus:pausedScreens:)
 - **`PausePolicy.pausedScreens`**：台前调度开着 → 返回全部屏幕（优先级最高）；否则 = `disabledScreens` ∪ 有全屏窗口的屏幕。分屏的两个窗口各占半屏，不与整块屏幕重合，所以不会误判成全屏。
 - **`HotKey`** 用 Carbon 的 `RegisterEventHotKey`（零权限）。`HotKey.isValid` 要求要么带修饰键，要么是不产出字符的键（F 键、方向键、Home/End/PageUp/PageDown/Help）——否则打字就会触发。键名表 `HotKey.keyNames` 用 `kVK_*` 常量，**不要手写键码数字**。Carbon 的 `cmdKey` 等常量在 Swift 里是 `Int`，要先转 `UInt32`。
 - **`StageManager.Monitor`** 每 2 s 读一次偏好并缓存，不要每帧读（`CFPreferencesCopyAppValue` 没那么便宜，而且读的是别的进程的域）。
+- **`MotionDetector`**：窗口连续 3 帧（`streakToEnter`）位置变了、而且鼠标键没按着、最近 3 帧光标位移不超过 4 pt（`mouseSlack`）→ 判为系统动画（切换桌面、最小化、吸附），连续 6 帧不动（`stillToLeave`）才结束；`NSWorkspace.activeSpaceDidChangeNotification` 之后 0.1 s 内 `force`。动画期间 `AppController.tick` 调 `overlays.hideAll()` 而不是 update。`NSEvent.pressedMouseButtons` 零权限可读，`--mouse` 覆盖鼠标位置时也照常读——否则测试期间有人拖窗口就会被误判（出过一次）。`--trace` 的状态行里 `anim=1 moving=[…]` 列出这一帧在动的窗口。
+- **`AppController.restartClock()`**：开着且没指定 `clock=timer` → `NSScreen.screens.first.displayLink(target:selector:)`（返回非可选 `CADisplayLink`；`CADisplayLink(target:selector:)` 那个构造器在 macOS 不可用），`add(to: .main, forMode: .common)`，120 Hz 屏上间隔不足 `minTickInterval` 的帧跳过；否则暂停 link、走 4 Hz `Timer`。selfcheck 的 `clock` 一行显示当前用的是哪个。
 - **`SettingsStore.overlayDimAlpha`**：低性能模式 = 隐藏 `NSVisualEffectView`，暗化取 `max(dimAlpha, lowPowerMinDim)`（`lowPowerMinDim = 0.5`）。用户把暗化调到 0 再开低性能，仍然要保证看不清。
 - **`FocusResolver`** 是 struct，`debounce <= 0` 时立即切换；候选窗口消失（`existing` 不含）时立即清空，不防抖。
 - **`RegionMath.subtract(rect, holes)`**：被遮窗口的覆盖区域要减去 z 序在它上面的所有窗口矩形（含焦点窗口）。否则被遮窗口伸到焦点窗口下面的部分会把焦点窗口也糊掉——这是实测踩到的坑。
-- **`OverlayManager`**：每屏一个 `ScreenOverlay`（全屏透明窗口，level = `CGWindowLevelForKey(.floatingWindow) + 1`，`collectionBehavior` 含 `.canJoinAllSpaces .fullScreenAuxiliary .stationary .ignoresCycle`）。`items: [CGWindowID: [OverlayItem]]`，块数相同就原地改 frame，不同才重建；淡出中的块不重复启动淡出。窗口 frame 直接设、不做动画（跟随要快），alpha 走 `animator()`。
+- **不处理 ≠ 可以盖。** `WindowSnapshot.fetch` 返回 `WindowFrame(windows:clear:)`：`clear` 是没被 `parse` 处理、但层级不高于覆盖层（`WindowSnapshot.overlayLevel`）的可见窗口——白名单 App、<80 pt 的小窗（输入法候选条一类）、1–3 层的浮动面板、本进程的设置窗口。`OverlayLayout.regions(clear:)` 把 z 序在某个被遮窗口**上面**的 `clear` 窗口（`order` 更小）也挖成洞；垫在下面的不挖，否则被遮窗口会漏出一块清晰区域。层级高于覆盖层的（菜单、菜单栏、Dock）本来就在上面，层级为负的（桌面图标、通知小组件）永远垫底，都不进 `clear`。第五轮之前只拿处理列表挖洞，这些窗口叠在被遮窗口上时会被连带糊掉。
+- **`OverlayManager`**：每屏一个 `ScreenOverlay`（全屏透明窗口，level = `CGWindowLevelForKey(.floatingWindow) + 1`，`collectionBehavior` 含 `.canJoinAllSpaces .fullScreenAuxiliary .stationary .ignoresCycle`）。`items: [CGWindowID: [OverlayItem]]`，块数相同就原地改 frame，不同时**在原来那组上增减**（多出来的 `isShown = false` 留着复用，新加的以当前显示的 alpha 起步），不整组重建——整组重建等于每次都从全透明淡入，拖动时被上面窗口切出的条数一变就闪。淡出中的块不重复启动淡出。窗口 frame 直接设、不做动画（跟随要快），alpha 走 `animator()`。
 - **`OverlayItem`** = `NSVisualEffectView`（`.behindWindow` + `.active`，`maskImage` 圆角 10）+ 黑色暗化 view，两个都是覆盖层窗口的直接子视图。
 - **设置窗口**用 `NSStackView` 代码布局，四边都有约束，窗口按 `contentView.fittingSize` 定尺寸（最小 480×590），当前实测 480×787（含标题栏，白名单反转勾上时 480×801）；加了新行后要确认它仍放得进 1169 高的屏幕（smoke 的 `settings window fits on screen`）。
 - **菜单栏**在 `AppController.start()` 里创建，不在 `init` 里——init 阶段 `self` 还没初始化完，闭包不能捕获它。
@@ -187,9 +195,9 @@ OverlayManager.update(windows:focus:pausedScreens:)
 | 参数 | 作用 |
 |---|---|
 | `--mouse "x,y[;x,y@毫秒…]"` | 用给定 CG 坐标代替真实鼠标；`@毫秒` = 启动后多久切到这个点 |
-| `--set key=value,…` | 覆盖设置：`enabled material dimAlpha animationMS debounceMS desktopBehavior pauseOnFullscreen pauseOnStageManager lowPower hotkeyEnabled hotkeyCode hotkeyModifiers whitelist blacklist invertWhitelist disableScreenAt=x;y stageManager=1`（`stageManager=1` 只是注入“开着”的标志，不改系统偏好） |
-| `--trace` | 每 15 帧打印 `mouse cand focus covered overlayIgnoresMouse windows`；焦点 / 被遮集合 / 暂停屏一变化就打一行 `t=… focus=… covered=… paused=…` |
-| `--open-settings` | 启动 2 s 后打开设置并打印 `selfcheck: …`（settingsWindow / settingsWindowSize / statusItem / overlayWindows / overlayIgnoresMouse / hotkey / launchAtLogin / screens / contentFits） |
+| `--set key=value,…` | 覆盖设置：`clock=timer` 退回 Timer 时钟；`enabled material dimAlpha animationMS debounceMS desktopBehavior pauseOnFullscreen pauseOnStageManager lowPower hotkeyEnabled hotkeyCode hotkeyModifiers whitelist blacklist invertWhitelist disableScreenAt=x;y stageManager=1`（`stageManager=1` 只是注入“开着”的标志，不改系统偏好） |
+| `--trace` | 每 15 帧打印 `mouse cand focus covered overlayIgnoresMouse windows`；焦点 / 被遮集合 / 暂停屏 / 动画状态一变化就打一行 `t=… focus=… covered=… paused=… anim=0|1`（动画中带 `moving=[…]`） |
+| `--open-settings` | 启动 2 s 后打开设置并打印 `selfcheck: …`（settingsWindow / settingsWindowSize / statusItem / overlayWindows / overlayIgnoresMouse / hotkey / launchAtLogin / screens / clock / contentFits） |
 | `--smoke <秒>` | 到点自动退出 |
 | `--toggle/--enable/--disable` | 通过 `DistributedNotificationCenter`（`com.dalongxia2017.PrivacyWindow.command`）发给运行中的实例，自己退出 |
 
@@ -230,7 +238,7 @@ OverlayManager.update(windows:focus:pausedScreens:)
 **需要你手动确认的两件事**：开机自启（勾上后注销再登录）；快捷键（按 ⌥⌘P、改键、关掉）。
 
 1. **模糊强度真正可调**：先做“材质 + 暗化”预设（公开 API）；`CAFilter` 连续半径只能做成默认关闭的实验开关，失效要能退回公开 API。
-2. **降低滞后**：`CVDisplayLink` 对齐刷新代替 `Timer`；窗口列表变化时立即重算；拖放 / 调整窗口大小期间可临时降刷新率；实测 4K / 多显示器每帧耗时。
+2. **降低滞后**：~~`CVDisplayLink` 对齐刷新代替 `Timer`~~（第六轮已做 `CADisplayLink`）；窗口列表变化时立即重算；拖放 / 调整窗口大小期间可临时降刷新率；实测 4K / 多显示器每帧耗时。
 3. **空闲降频**：鼠标和窗口都不动时降到 ~10 Hz，一有变化立刻恢复。
 4. **桌面图标模糊**：鼠标在桌面空白处时的可选项（在桌面区域再放一块覆盖层）。
 5. **屏幕共享 / 录屏时自动全模糊**：隐私场景的核心价值。先确认检测共享状态要不要权限（`CGDisplayStream` / `SCStream` 运行状态 vs 私有 CGS API），要的话做成可选、默认不申请。
@@ -244,7 +252,7 @@ OverlayManager.update(windows:focus:pausedScreens:)
 
 做过但不做的：真实点击穿透的自动化测试（没有辅助功能权限注入不了点击；覆盖层一有鼠标经过就让位，实际没有影响）。
 
-变更记录：第一轮 调研 + 架构选型 → 第二轮 最小程序（焦点毛玻璃、设置、菜单栏、开关）→ 第三轮 快捷键、低性能模式、按屏开关、开机自启、黑白名单、台前调度暂停；调研和计划并入 README 与本文 → 第四轮 白名单反转（只给列表里的 App 盖毛玻璃）。
+变更记录：第一轮 调研 + 架构选型 → 第二轮 最小程序（焦点毛玻璃、设置、菜单栏、开关）→ 第三轮 快捷键、低性能模式、按屏开关、开机自启、黑白名单、台前调度暂停；调研和计划并入 README 与本文 → 第四轮 白名单反转（只给列表里的 App 盖毛玻璃）→ 第五轮 不处理但会被连带糊掉的窗口（白名单 App、小窗、浮动面板、设置窗口）改为留洞 → 第六轮 窗口移动 / 切换桌面时的卡顿（块数变化不重建、`MotionDetector` 系统动画期间隐藏覆盖层、`CADisplayLink` 时钟）。
 
 ## 同类与参考
 
