@@ -5,12 +5,15 @@
 #   ./build.sh test       构建并运行自检
 #   ./build.sh run        构建并启动
 #   ./build.sh dist       构建 + ad-hoc 签名 + 打包 zip
+#   ./build.sh dmg        构建 + ad-hoc 签名 + 打包 dmg（带「应用程序」快捷方式）
 #   ./build.sh clean
 set -euo pipefail
 
 cd "$(dirname "$0")"
 
 APP="build/PrivacyWindow.app"
+DMG="build/PrivacyWindow.dmg"
+VOL="PrivacyWindow"
 CONTENTS="$APP/Contents"
 BIN="$CONTENTS/MacOS/PrivacyWindow"
 MIN_MACOS="14.0"
@@ -60,6 +63,31 @@ dist() {
 	echo "已生成 build/PrivacyWindow.zip"
 }
 
+dmg() {
+	build
+	sign
+	# 这台机器的沙盒里 `hdiutil create` 一律报“目錄不是空的”，也不能写 /Volumes，`diskutil image` 可以用。
+	# 所以走：空白可读写镜像 → 挂到项目目录内 → 拷入 App 和「应用程序」快捷方式 → 卸载 → 转成压缩只读镜像。
+	local rw mnt
+	rw="build/PrivacyWindow-rw.dmg"
+	mnt="$PWD/build/dmg-mount"
+	rm -f "$DMG" "$rw"
+	mkdir -p "$mnt"
+	diskutil image create blank "$rw" --size 40m --fs APFS --volname "$VOL" >/dev/null
+	# 挂上以后无论成败都要卸载，否则会留下一个 40 MB 的空盘
+	trap 'hdiutil detach "$mnt" >/dev/null 2>&1 || true; rm -rf "$mnt"' RETURN
+	diskutil image attach "$rw" --mountPoint "$mnt" >/dev/null
+	ditto "$APP" "$mnt/PrivacyWindow.app"
+	ln -s /Applications "$mnt/Applications"
+	hdiutil detach "$mnt" >/dev/null
+	trap - RETURN
+	rmdir "$mnt"
+	diskutil image create from "$rw" "$DMG" --format UDZO >/dev/null
+	rm -f "$rw"
+	hdiutil verify -quiet "$DMG"
+	echo "已生成 $DMG"
+}
+
 case "${1:-build}" in
 build)
 	build
@@ -74,11 +102,14 @@ run)
 dist)
 	dist
 	;;
+dmg)
+	dmg
+	;;
 clean)
 	rm -rf build
 	;;
 *)
-	echo "用法: $0 [build|test|run|dist|clean]" >&2
+	echo "用法: $0 [build|test|run|dist|dmg|clean]" >&2
 	exit 2
 	;;
 esac

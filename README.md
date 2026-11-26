@@ -76,6 +76,7 @@ macOS 菜单栏小工具。纯 Swift + AppKit 公开 API，单个 `swiftc` 命�
 ./build.sh test       # 构建并跑 63 项自检
 ./build.sh run        # 构建并启动
 ./build.sh dist       # ad-hoc 签名 + build/PrivacyWindow.zip
+./build.sh dmg        # ad-hoc 签名 + build/PrivacyWindow.dmg（带「应用程序」快捷方式）
 ```
 
 系统要求 macOS 14+。`build.sh` 按本机架构编译；目前只在 Apple Silicon（arm64）上构建和测试过。
@@ -84,14 +85,14 @@ macOS 菜单栏小工具。纯 Swift + AppKit 公开 API，单个 `swiftc` 命�
 
 在本机构建出来的 `build/PrivacyWindow.app` 可以直接双击打开，不用装到别处。想当作常驻工具用：
 
-1. 把 `build/PrivacyWindow.app` 拖到「应用程序」文件夹（或个人的 `~/Applications`）。
+1. 把 `build/PrivacyWindow.app` 拖到「应用程序」文件夹（或个人的 `~/Applications`）。给别人装的话用 `./build.sh dmg` 打出的 `build/PrivacyWindow.dmg`：打开后把 App 拖进旁边的「应用程序」文件夹即可。
 2. 先打开一次：菜单栏出现图标即可，没有 Dock 图标、不会弹授权请求。
 3. 需要开机自启的话，**挪好位置以后再**在设置里勾上「登录时自动启动」。登录项记录的是 App 当时的位置，之后再挪动要重新勾一次。
 4. 想从 Spotlight 打开设置或在 Finder 里看到它，把它留在「应用程序」里就行。
 
 **升级**：重新构建，用新的 `PrivacyWindow.app` 覆盖旧的。设置存在用户偏好里（见上面「名称」表），不在 App 包内，覆盖后不会丢。
 
-**拷到别的 Mac**：`./build.sh dist` 会打包成 `build/PrivacyWindow.zip`。它**没有 Developer ID 签名和公证**，只做了 ad-hoc 签名，别的电脑第一次打开很可能被 Gatekeeper 拦下。可以到「系统设置 → 隐私与安全性」里找「仍要打开」；如果提示“已损坏”，在终端执行 `xattr -dr com.apple.quarantine /Applications/PrivacyWindow.app` 后再试。这条路径我只按惯例写，**没有在别的电脑上验证过**。另外 `build.sh` 按本机架构编译，给 Intel 机器用要在 Intel 机器上重新构建。
+**拷到别的 Mac**：`./build.sh dmg` 打成 `build/PrivacyWindow.dmg`（`./build.sh dist` 则是 zip）。它**没有 Developer ID 签名和公证**，只做了 ad-hoc 签名，别的电脑第一次打开很可能被 Gatekeeper 拦下。可以到「系统设置 → 隐私与安全性」里找「仍要打开」；如果提示“已损坏”，在终端执行 `xattr -dr com.apple.quarantine /Applications/PrivacyWindow.app` 后再试。这条路径我只按惯例写，**没有在别的电脑上验证过**。另外 `build.sh` 按本机架构编译，给 Intel 机器用要在 Intel 机器上重新构建。
 
 ## 使用
 
