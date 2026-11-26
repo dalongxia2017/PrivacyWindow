@@ -72,7 +72,7 @@ macOS 菜单栏工具：鼠标悬停的窗口保持清晰，同屏其它普通�
 | 覆盖层 level | floating(3) + 1 = 4，低于 Dock(20) 和菜单栏(24) | `ScreenOverlay` |
 | toggle 开 / 关延迟上界（含截图耗时） | 130–180 ms | smoke 的 `toggle off / on` |
 | 覆盖层跟随移动窗口 | 8/8，最慢 184 ms（含截图耗时） | smoke 的 `overlay follows window` |
-| 设置窗口 | 480×779（含标题栏） | smoke 的 `settings window` |
+| 设置窗口 | 480×787（含标题栏） | smoke 的 `settings window` |
 
 ### 权限对照（改代码前对照这张表）
 
@@ -104,7 +104,7 @@ macOS 菜单栏工具：鼠标悬停的窗口保持清晰，同屏其它普通�
 
 ```bash
 ./build.sh build     # → build/PrivacyWindow.app；日志 build/build.log
-./build.sh test      # 构建 + --selftest（63 项，纯逻辑，不弹窗）
+./build.sh test      # 构建 + --selftest（67 项，纯逻辑，不弹窗）
 ./build.sh dmg       # ad-hoc 签名 + build/PrivacyWindow.dmg
 python3 spike/smoke.py --all   # 端到端，见下
 ```
@@ -169,6 +169,7 @@ OverlayManager.update(windows:focus:pausedScreens:)
 ### 各模块要点
 
 - **`WindowSnapshot.parse`** 是唯一的窗口过滤入口，规则集中在这里，改规则只改这一处。bundle id 通过 `NSRunningApplication(processIdentifier:)` 取并缓存。白名单里的 App 直接丢掉（等于不存在）；黑名单里的 App 保留，但 `pinned = true`：`HitTest` 不选它当焦点，它永远是“被遮”的。`--trace` 的窗口列表里黑名单窗口带 `(黑)`。
+- **白名单反转**（`SettingsStore.invertWhitelist`，键 `pw.invertWhitelist`）：`WindowSnapshot.fetch` 把 `whitelist` 当 `only:` 传给 `parse`，白名单本身传空集。含义 = 只有列表里的 App 被处理（能当焦点、不悬停时被盖），其余全部丢掉；列表为空就什么都不盖；没有 bundle id 的进程（命令行工具）认不出来，反转时不处理。黑名单只在同时也在白名单里的 App 上生效。设置窗口里是白名单标题下的一个复选框，`syncWhitelistWording()` 负责切换标题和说明。
 - **`Geometry`**：CG 坐标原点在主屏左上、Y 向下；`nsToCG(_, mainHeight:)` 用主屏高度翻 Y。`CGWindowListCopyWindowInfo` 给的 bounds **不含阴影**，所以不需要外扩。
 - **`PausePolicy.pausedScreens`**：台前调度开着 → 返回全部屏幕（优先级最高）；否则 = `disabledScreens` ∪ 有全屏窗口的屏幕。分屏的两个窗口各占半屏，不与整块屏幕重合，所以不会误判成全屏。
 - **`HotKey`** 用 Carbon 的 `RegisterEventHotKey`（零权限）。`HotKey.isValid` 要求要么带修饰键，要么是不产出字符的键（F 键、方向键、Home/End/PageUp/PageDown/Help）——否则打字就会触发。键名表 `HotKey.keyNames` 用 `kVK_*` 常量，**不要手写键码数字**。Carbon 的 `cmdKey` 等常量在 Swift 里是 `Int`，要先转 `UInt32`。
@@ -178,7 +179,7 @@ OverlayManager.update(windows:focus:pausedScreens:)
 - **`RegionMath.subtract(rect, holes)`**：被遮窗口的覆盖区域要减去 z 序在它上面的所有窗口矩形（含焦点窗口）。否则被遮窗口伸到焦点窗口下面的部分会把焦点窗口也糊掉——这是实测踩到的坑。
 - **`OverlayManager`**：每屏一个 `ScreenOverlay`（全屏透明窗口，level = `CGWindowLevelForKey(.floatingWindow) + 1`，`collectionBehavior` 含 `.canJoinAllSpaces .fullScreenAuxiliary .stationary .ignoresCycle`）。`items: [CGWindowID: [OverlayItem]]`，块数相同就原地改 frame，不同才重建；淡出中的块不重复启动淡出。窗口 frame 直接设、不做动画（跟随要快），alpha 走 `animator()`。
 - **`OverlayItem`** = `NSVisualEffectView`（`.behindWindow` + `.active`，`maskImage` 圆角 10）+ 黑色暗化 view，两个都是覆盖层窗口的直接子视图。
-- **设置窗口**用 `NSStackView` 代码布局，四边都有约束，窗口按 `contentView.fittingSize` 定尺寸（最小 480×590），当前实测 480×779（含标题栏）；加了新行后要确认它仍放得进 1169 高的屏幕（smoke 的 `settings window fits on screen`）。
+- **设置窗口**用 `NSStackView` 代码布局，四边都有约束，窗口按 `contentView.fittingSize` 定尺寸（最小 480×590），当前实测 480×787（含标题栏，白名单反转勾上时 480×801）；加了新行后要确认它仍放得进 1169 高的屏幕（smoke 的 `settings window fits on screen`）。
 - **菜单栏**在 `AppController.start()` 里创建，不在 `init` 里——init 阶段 `self` 还没初始化完，闭包不能捕获它。
 
 ### 调试参数（只在命令行显式传入时生效）
@@ -186,7 +187,7 @@ OverlayManager.update(windows:focus:pausedScreens:)
 | 参数 | 作用 |
 |---|---|
 | `--mouse "x,y[;x,y@毫秒…]"` | 用给定 CG 坐标代替真实鼠标；`@毫秒` = 启动后多久切到这个点 |
-| `--set key=value,…` | 覆盖设置：`enabled material dimAlpha animationMS debounceMS desktopBehavior pauseOnFullscreen pauseOnStageManager lowPower hotkeyEnabled hotkeyCode hotkeyModifiers whitelist blacklist disableScreenAt=x;y stageManager=1`（`stageManager=1` 只是注入“开着”的标志，不改系统偏好） |
+| `--set key=value,…` | 覆盖设置：`enabled material dimAlpha animationMS debounceMS desktopBehavior pauseOnFullscreen pauseOnStageManager lowPower hotkeyEnabled hotkeyCode hotkeyModifiers whitelist blacklist invertWhitelist disableScreenAt=x;y stageManager=1`（`stageManager=1` 只是注入“开着”的标志，不改系统偏好） |
 | `--trace` | 每 15 帧打印 `mouse cand focus covered overlayIgnoresMouse windows`；焦点 / 被遮集合 / 暂停屏一变化就打一行 `t=… focus=… covered=… paused=…` |
 | `--open-settings` | 启动 2 s 后打开设置并打印 `selfcheck: …`（settingsWindow / settingsWindowSize / statusItem / overlayWindows / overlayIgnoresMouse / hotkey / launchAtLogin / screens / contentFits） |
 | `--smoke <秒>` | 到点自动退出 |
@@ -243,7 +244,7 @@ OverlayManager.update(windows:focus:pausedScreens:)
 
 做过但不做的：真实点击穿透的自动化测试（没有辅助功能权限注入不了点击；覆盖层一有鼠标经过就让位，实际没有影响）。
 
-变更记录：第一轮 调研 + 架构选型 → 第二轮 最小程序（焦点毛玻璃、设置、菜单栏、开关）→ 第三轮 快捷键、低性能模式、按屏开关、开机自启、黑白名单、台前调度暂停；调研和计划并入 README 与本文。
+变更记录：第一轮 调研 + 架构选型 → 第二轮 最小程序（焦点毛玻璃、设置、菜单栏、开关）→ 第三轮 快捷键、低性能模式、按屏开关、开机自启、黑白名单、台前调度暂停；调研和计划并入 README 与本文 → 第四轮 白名单反转（只给列表里的 App 盖毛玻璃）。
 
 ## 同类与参考
 

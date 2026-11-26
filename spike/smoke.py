@@ -154,6 +154,16 @@ def phase_screen_off():
     record("disabled screen is left alone", covered > CLEAR_MIN, f"variance={covered:.0f}")
 
 
+def phase_inverted_whitelist():
+    """白名单反转：列表以外的一概不处理。靶窗口（probe3，没有 bundle id）不在列表里 → 必须保持清晰；
+    关掉反转后同一个列表 = 普通白名单，靶窗口照常被盖。"""
+    ghost = "com.example.not-running"
+    covered, _, _ = measure_covered_then_focused(["--set", f"invertWhitelist=1,whitelist={ghost}"])
+    record("inverted whitelist leaves unlisted apps alone", covered > CLEAR_MIN, f"variance={covered:.0f}")
+    covered, _, _ = measure_covered_then_focused(["--set", f"invertWhitelist=0,whitelist={ghost}"])
+    record("same list without inversion behaves as before", covered < BLURRED_MAX, f"blurred={covered:.0f}")
+
+
 def phase_stage_manager():
     covered, _, _ = measure_covered_then_focused(["--set", "stageManager=1"])
     record("stage manager pauses overlay", covered > CLEAR_MIN, f"variance={covered:.0f}")
@@ -352,6 +362,7 @@ def main():
         phase_toggle()
         phase_low_power()
         phase_screen_off()
+        phase_inverted_whitelist()
         phase_stage_manager()
         phase_settings()
         phase_hotkey_off()

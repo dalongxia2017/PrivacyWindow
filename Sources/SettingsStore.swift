@@ -65,6 +65,10 @@ enum AppList: String, CaseIterable {
         case .blacklist: return "这些 App 的窗口始终盖毛玻璃，鼠标移上去也不会变清晰（适合密码管理器、聊天软件）。"
         }
     }
+
+    /// 白名单反转时（`SettingsStore.invertWhitelist`）的含义：只有列表里的 App 会被盖，其余一概不处理。
+    static let invertedWhitelistTitle = "白名单 · 只模糊列表里的 App"
+    static let invertedWhitelistHint = "只有这些 App 的窗口会被盖毛玻璃（鼠标移上去变清晰，和平时一样）；列表以外的 App 永远不盖。"
 }
 
 /// 所有设置都落在 UserDefaults，任一属性改动后广播 `SettingsStore.didChange`。
@@ -87,6 +91,8 @@ final class SettingsStore {
     var whitelist: [String] { didSet { save(whitelist, "whitelist") } }
     /// 黑名单：永远模糊的 App（bundle id）
     var blacklist: [String] { didSet { save(blacklist, "blacklist") } }
+    /// 反转白名单：true = 只有白名单里的 App 会被盖（鼠标移上去仍会变清晰），列表以外的 App 一概不处理
+    var invertWhitelist: Bool { didSet { save(invertWhitelist, "invertWhitelist") } }
     var desktopBehavior: DesktopBehavior { didSet { save(desktopBehavior.rawValue, "desktopBehavior") } }
     /// 某屏有全屏窗口时该屏暂停
     var pauseOnFullscreen: Bool { didSet { save(pauseOnFullscreen, "pauseOnFullscreen") } }
@@ -117,6 +123,7 @@ final class SettingsStore {
         // 旧版本只有一个“排除 App”名单，语义就是白名单
         whitelist = get("whitelist") as? [String] ?? get("excludedBundleIDs") as? [String] ?? []
         blacklist = get("blacklist") as? [String] ?? []
+        invertWhitelist = get("invertWhitelist") as? Bool ?? false
         desktopBehavior = DesktopBehavior(rawValue: get("desktopBehavior") as? String ?? "") ?? .keepLast
         pauseOnFullscreen = get("pauseOnFullscreen") as? Bool ?? true
         pauseOnStageManager = get("pauseOnStageManager") as? Bool ?? true

@@ -78,6 +78,17 @@ enum SelfTest {
         expect("keeps layer-0, ≥80pt, opaque, other apps, not whitelisted", out.map(\.id) == [2, 8])
         expect("bundle-less app is kept", out.last?.bundleID == nil)
         expect("blacklisted window is pinned", out.first?.pinned == true && out.last?.pinned == false)
+
+        // 反转白名单：只处理 com.a（仍是黑名单 → 钉住）和 com.b（但它的窗口太小，本就被过滤），com.c 和没有 bundle id 的 F 都丢掉
+        let only: Set<String> = ["com.a", "com.b"]
+        let inverted = WindowSnapshot.parse(list, ownPID: 999, whitelist: [], blacklist: ["com.a"], only: only) { names[$0] ?? ("?", nil) }
+        expect("inverted whitelist keeps only listed apps", inverted.map(\.id) == [2])
+        expect("inverted whitelist still pins blacklisted apps", inverted.first?.pinned == true)
+        // 反转但列表为空 = 什么都不处理（列表里有其它 App 时 com.d 所在的窗口不会出现）
+        let none = WindowSnapshot.parse(list, ownPID: 999, whitelist: [], blacklist: [], only: []) { names[$0] ?? ("?", nil) }
+        expect("inverted whitelist with an empty list covers nothing", none.isEmpty)
+        let some = WindowSnapshot.parse(list, ownPID: 999, whitelist: [], blacklist: [], only: ["com.d"]) { names[$0] ?? ("?", nil) }
+        expect("listed app becomes a normal (focusable, covered) window when inverted", some.map(\.id) == [6] && some.first?.pinned == false)
     }
 
     private static func hitTest() {
@@ -261,13 +272,14 @@ enum SelfTest {
         a.desktopBehavior = .blurAll
         a.pauseOnFullscreen = false
         a.lowPower = true
+        a.invertWhitelist = true
         a.disabledScreens = [3]
         a.hotkeyEnabled = false
         a.hotkey = HotKey(keyCode: UInt32(kVK_F19), modifiers: 0)
         let b = SettingsStore(defaults: defaults)
         expect("persisted", !b.enabled && b.material == .popover && b.dimAlpha == 0.5
             && b.animationMS == 250 && b.debounceMS == 0 && b.whitelist == ["com.x"] && b.blacklist == ["com.p"]
-            && b.desktopBehavior == .blurAll && !b.pauseOnFullscreen && b.lowPower
+            && b.desktopBehavior == .blurAll && !b.pauseOnFullscreen && b.lowPower && b.invertWhitelist
             && b.disabledScreens == [3] && !b.hotkeyEnabled && b.hotkey.keyCode == UInt32(kVK_F19))
         expect("low power forces dim ≥ 50%", b.overlayDimAlpha == 0.5)
         b.dimAlpha = 0.1

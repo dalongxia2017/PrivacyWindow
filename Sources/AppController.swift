@@ -100,6 +100,7 @@ final class AppController {
             // 名单里的 bundle id 用 `+` 连接：`--set` 自己已经用逗号分隔了
             case "whitelist": settings.whitelist = Self.splitList(value)
             case "blacklist": settings.blacklist = Self.splitList(value)
+            case "invertWhitelist": settings.invertWhitelist = flag
             // `disableScreenAt=x;y`：关掉包含这个 CG 坐标的显示器
             case "disableScreenAt":
                 let xy = value.split(separator: ";").compactMap { Double($0) }
@@ -201,7 +202,8 @@ final class AppController {
         guard settings.enabled else { return nil }
         let mouse = mouseOverride?.current ?? Geometry.nsToCG(NSEvent.mouseLocation, mainHeight: Geometry.mainCG.height)
         let windows = WindowSnapshot.fetch(ownPID: ProcessInfo.processInfo.processIdentifier,
-                                           whitelist: Set(settings.whitelist), blacklist: Set(settings.blacklist))
+                                           whitelist: Set(settings.whitelist), blacklist: Set(settings.blacklist),
+                                           invertWhitelist: settings.invertWhitelist)
         let existing = Set(windows.map(\.id))
 
         var candidate = HitTest.candidate(windows: windows, at: mouse)?.id

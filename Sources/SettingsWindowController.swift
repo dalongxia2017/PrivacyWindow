@@ -77,6 +77,9 @@ final class SettingsWindowController: NSObject {
     private var lowPowerCheck = NSButton(checkboxWithTitle: "", target: nil, action: nil)
     private var launchCheck = NSButton(checkboxWithTitle: "", target: nil, action: nil)
     private var hotkeyCheck = NSButton(checkboxWithTitle: "", target: nil, action: nil)
+    private var invertCheck = NSButton(checkboxWithTitle: "", target: nil, action: nil)
+    private var whitelistTitle = NSTextField(labelWithString: "")
+    private var whitelistHint = NSTextField(wrappingLabelWithString: "")
     private var hotkeyRecorder = HotKeyRecorder(frame: NSRect(x: 0, y: 0, width: 150, height: 24))
     private var displayStack = NSStackView()
     private var displayChecks: [(check: NSButton, id: CGDirectDisplayID)] = []
@@ -197,9 +200,20 @@ final class SettingsWindowController: NSObject {
             let title = NSTextField(labelWithString: list.title)
             title.font = NSFont.systemFont(ofSize: NSFont.systemFontSize, weight: .semibold)
             stack.addArrangedSubview(title)
+            if list == .whitelist {
+                // 反转白名单：列表里的 App 从“永远清晰”变成“只有它们会被盖”
+                invertCheck = NSButton(checkboxWithTitle: "反转：只给列表里的 App 盖毛玻璃（其余 App 不处理）",
+                                       target: self, action: #selector(invertWhitelistChanged))
+                stack.addArrangedSubview(invertCheck)
+            }
             stack.addArrangedSubview(buildTable(list))
             stack.addArrangedSubview(buildListButtons(list))
-            stack.addArrangedSubview(hint(list.hint))
+            let text = hint(list.hint)
+            if list == .whitelist {
+                whitelistTitle = title
+                whitelistHint = text
+            }
+            stack.addArrangedSubview(text)
         }
 
         return content
@@ -214,12 +228,20 @@ final class SettingsWindowController: NSObject {
         return separator
     }
 
-    private func hint(_ text: String) -> NSView {
+    private func hint(_ text: String) -> NSTextField {
         let hint = NSTextField(wrappingLabelWithString: text)
         hint.textColor = .secondaryLabelColor
         hint.font = NSFont.systemFont(ofSize: NSFont.smallSystemFontSize)
         hint.preferredMaxLayoutWidth = 420
         return hint
+    }
+
+    /// 反转开关只改白名单这一块的标题和说明，列表本身（bundle id）不动
+    private func syncWhitelistWording() {
+        let inverted = settings.invertWhitelist
+        invertCheck.state = inverted ? .on : .off
+        whitelistTitle.stringValue = inverted ? AppList.invertedWhitelistTitle : AppList.whitelist.title
+        whitelistHint.stringValue = inverted ? AppList.invertedWhitelistHint : AppList.whitelist.hint
     }
 
     private func buildTable(_ list: AppList) -> NSView {
@@ -362,6 +384,10 @@ final class SettingsWindowController: NSObject {
         settings.lowPower = lowPowerCheck.state == .on
     }
 
+    @objc private func invertWhitelistChanged() {
+        settings.invertWhitelist = invertCheck.state == .on
+    }
+
     @objc private func hotkeyEnabledChanged() {
         settings.hotkeyEnabled = hotkeyCheck.state == .on
     }
@@ -445,6 +471,7 @@ final class SettingsWindowController: NSObject {
         fullscreenCheck.state = settings.pauseOnFullscreen ? .on : .off
         stageManagerCheck.state = settings.pauseOnStageManager ? .on : .off
         lowPowerCheck.state = settings.lowPower ? .on : .off
+        syncWhitelistWording()
         hotkeyCheck.state = settings.hotkeyEnabled ? .on : .off
         hotkeyRecorder.hotKey = settings.hotkey
         launchCheck.state = LaunchAtLogin.state == .disabled ? .off : .on
