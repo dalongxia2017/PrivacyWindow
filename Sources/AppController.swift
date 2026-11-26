@@ -150,6 +150,7 @@ final class AppController {
                 "selfcheck: launchAtLogin \(self.launchAtLoginState)",
                 "selfcheck: screens \(self.settingsWindow.debugScreenChecks())",
                 "selfcheck: idle \(self.settings.idleTimeout > 0 ? IdleTimeout.title(for: self.settings.idleTimeout) : "off")",
+                "selfcheck: idleControls \(self.settingsWindow.debugIdleControls)",
             ]
             // 设置窗口必须永远清晰：真实窗口列表 + 本帧的焦点算一遍，盖到它身上的面积应为 0。
             // 对照：同样的列表不带 alwaysClearIDs（= 旧版的行为），面积应大于 0，否则这项检查什么也证明不了

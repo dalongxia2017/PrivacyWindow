@@ -6,18 +6,34 @@ enum IdleTimeout {
     /// 设置窗口下拉框里的选项（秒）
     static let options: [TimeInterval] = [0, 10, 20, 30, 60, 120, 300]
 
+    /// 手动输入框里没填过东西时先放这个数
+    static let customDefault: TimeInterval = 45
+    static let customMax: TimeInterval = 24 * 3600
+
     static func title(for seconds: TimeInterval) -> String {
         switch seconds {
         case 0: return "关闭"
         case ..<60: return "\(Int(seconds)) 秒"
-        default: return "\(Int(seconds) / 60) 分钟"
+        case ..<3600: return "\(Int(seconds) / 60) 分钟"
+        default: return "\(Int(seconds) / 3600) 小时"
         }
     }
 
-    /// 存的是秒；不在选项里的值（旧版本手改过的 defaults）按最接近的较长一档处理
+    /// 不在预设里、但也不是 0 的值 = 用户手动输入的
+    static func isCustom(_ seconds: TimeInterval) -> Bool {
+        seconds > 0 && !options.contains(seconds)
+    }
+
+    /// 存的是秒：取整，最小 1 秒（0 = 关闭，由下拉框的“关闭”负责），最大一天
     static func normalized(_ seconds: TimeInterval) -> TimeInterval {
         guard seconds > 0 else { return 0 }
-        return options.first { $0 >= seconds } ?? options[options.count - 1]
+        return min(max(seconds.rounded(), 1), customMax)
+    }
+
+    /// 把输入框里的文字变成秒数。不是正整数就返回 nil。
+    static func parse(_ text: String) -> TimeInterval? {
+        guard let value = Int(text.trimmingCharacters(in: .whitespaces)), value > 0 else { return nil }
+        return normalized(TimeInterval(value))
     }
 }
 

@@ -73,6 +73,7 @@ final class SettingsWindowController: NSObject {
     private var materialPopup = NSPopUpButton()
     private var desktopPopup = NSPopUpButton()
     private var idlePopup = NSPopUpButton()
+    private var idleField = NSTextField()
     private var fullscreenCheck = NSButton(checkboxWithTitle: "", target: nil, action: nil)
     private var stageManagerCheck = NSButton(checkboxWithTitle: "", target: nil, action: nil)
     private var lowPowerCheck = NSButton(checkboxWithTitle: "", target: nil, action: nil)
@@ -165,11 +166,23 @@ final class SettingsWindowController: NSObject {
         stack.addArrangedSubview(row("鼠标在桌面", desktopPopup))
 
         // 静止后重新模糊
-        idlePopup.addItems(withTitles: IdleTimeout.options.map(IdleTimeout.title))
+        idlePopup.addItems(withTitles: IdleTimeout.options.map(IdleTimeout.title) + [Self.customTitle])
         idlePopup.target = self
         idlePopup.action = #selector(idleChanged)
         idlePopup.toolTip = "鼠标和键盘都这么久没动，清晰的窗口重新变模糊；动一下就恢复"
-        stack.addArrangedSubview(row("静止后重新模糊", idlePopup))
+        idleField = NSTextField(string: "\(Int(IdleTimeout.customDefault)) 秒")
+        idleField.target = self
+        idleField.action = #selector(idleFieldChanged)
+        idleField.alignment = .right
+        idleField.toolTip = "手动输入秒数（1 秒 – 24 小时），回车生效"
+        idleField.widthAnchor.constraint(equalToConstant: 86).isActive = true
+        idleField.translatesAutoresizingMaskIntoConstraints = false
+        idleField.isHidden = true
+        let idleRow = NSStackView(views: [idlePopup, idleField])
+        idleRow.orientation = .horizontal
+        idleRow.spacing = 8
+        idleRow.alignment = .centerY
+        stack.addArrangedSubview(row("静止后重新模糊", idleRow))
 
         // 快捷键
         hotkeyCheck = NSButton(checkboxWithTitle: "启用快捷键", target: self, action: #selector(hotkeyEnabledChanged))
@@ -375,9 +388,41 @@ final class SettingsWindowController: NSObject {
         settings.debounceMS = (debounceSlider.doubleValue / 10).rounded() * 10
     }
 
+    private static let customTitle = "自定义…"
+
     @objc private func idleChanged() {
         let index = idlePopup.indexOfSelectedItem
-        if IdleTimeout.options.indices.contains(index) { settings.idleTimeout = IdleTimeout.options[index] }
+        if IdleTimeout.options.indices.contains(index) {
+            settings.idleTimeout = IdleTimeout.options[index]
+        } else if !IdleTimeout.isCustom(settings.idleTimeout) {
+            // 刚从预设切到“自定义”：先用输入框里现在的数（或默认值），用户改了再覆盖
+            settings.idleTimeout = IdleTimeout.parse(idleField.stringValue) ?? IdleTimeout.customDefault
+        }
+        syncIdleControls()
+        if idlePopup.indexOfSelectedItem == IdleTimeout.options.count {
+            window.makeFirstResponder(idleField)
+        }
+    }
+
+    /// 输入框里改了数：是正整数才生效，否则保持原值（下一次 syncControls 会把文字改回去）
+    @objc private func idleFieldChanged() {
+        if let seconds = IdleTimeout.parse(idleField.stringValue) {
+            settings.idleTimeout = seconds
+        }
+        syncControls()
+    }
+
+    private func syncIdleControls() {
+        let seconds = settings.idleTimeout
+        idlePopup.selectItem(at: IdleTimeout.options.firstIndex(of: seconds) ?? IdleTimeout.options.count)
+        idleField.isHidden = !IdleTimeout.isCustom(seconds)
+        idleField.stringValue = "\(Int(IdleTimeout.isCustom(seconds) ? seconds : IdleTimeout.customDefault))"
+    }
+
+    /// `--open-settings` 用：下拉框选中的是哪一项、输入框露出来没有、里面是什么
+    var debugIdleControls: String {
+        let title = idlePopup.titleOfSelectedItem ?? "none"
+        return "popup=\(title) field=\(idleField.isHidden ? "hidden" : "shown"):\(idleField.stringValue)"
     }
 
     @objc private func desktopChanged() {
@@ -493,7 +538,7 @@ final class SettingsWindowController: NSObject {
     private func syncControls() {
         materialPopup.selectItem(at: BlurMaterial.allCases.firstIndex(of: settings.material) ?? 0)
         desktopPopup.selectItem(at: DesktopBehavior.allCases.firstIndex(of: settings.desktopBehavior) ?? 0)
-        idlePopup.selectItem(at: IdleTimeout.options.firstIndex(of: settings.idleTimeout) ?? 0)
+        syncIdleControls()
         fullscreenCheck.state = settings.pauseOnFullscreen ? .on : .off
         stageManagerCheck.state = settings.pauseOnStageManager ? .on : .off
         lowPowerCheck.state = settings.lowPower ? .on : .off

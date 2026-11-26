@@ -363,10 +363,18 @@ enum SelfTest {
                && c.update(mouse: p, keyboardIdle: 1000, now: 50.1))
 
         expect("idle timeout titles", IdleTimeout.title(for: 0) == "关闭" && IdleTimeout.title(for: 20) == "20 秒"
-               && IdleTimeout.title(for: 60) == "1 分钟" && IdleTimeout.title(for: 300) == "5 分钟")
-        expect("idle timeout is normalized to the offered options",
-               IdleTimeout.normalized(0) == 0 && IdleTimeout.normalized(45) == 60 && IdleTimeout.normalized(5) == 10
-               && IdleTimeout.normalized(9999) == 300 && IdleTimeout.normalized(-3) == 0)
+               && IdleTimeout.title(for: 60) == "1 分钟" && IdleTimeout.title(for: 300) == "5 分钟"
+               && IdleTimeout.title(for: 3600) == "1 小时")
+        expect("idle timeout is rounded and clamped, not snapped to the presets",
+               IdleTimeout.normalized(0) == 0 && IdleTimeout.normalized(45) == 45 && IdleTimeout.normalized(5) == 5
+               && IdleTimeout.normalized(0.2) == 1 && IdleTimeout.normalized(99999) == IdleTimeout.customMax
+               && IdleTimeout.normalized(-3) == 0)
+        expect("idle timeout: presets vs custom value",
+               !IdleTimeout.isCustom(0) && !IdleTimeout.isCustom(10) && IdleTimeout.isCustom(45) && IdleTimeout.isCustom(3600))
+        expect("idle timeout: manual input is parsed as whole seconds",
+               IdleTimeout.parse(" 90 ") == 90 && IdleTimeout.parse("1") == 1 && IdleTimeout.parse("100000") == IdleTimeout.customMax
+               && IdleTimeout.parse("0") == nil && IdleTimeout.parse("-5") == nil && IdleTimeout.parse("1.5") == nil
+               && IdleTimeout.parse("abc") == nil && IdleTimeout.parse("") == nil)
     }
 
     private static func defaultsRoundTrip() {
