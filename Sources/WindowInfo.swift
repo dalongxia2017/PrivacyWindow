@@ -77,6 +77,12 @@ enum WindowSnapshot {
     /// 层级高于覆盖层的（菜单、Dock、菜单栏）本来就在覆盖层上面，不用管；
     /// 层级为负的（桌面图标、通知小组件）永远垫在最底下，也不会压在谁的上面。
     /// 本进程层级不低于覆盖层的窗口是覆盖层自己，跳过；设置窗口（layer 0）要算进来。
+    ///
+    /// layer 0 里只有“正常大小的窗口”才挖洞——因为 App 规则不处理的（白名单、反转时不在中国内的）
+    /// 和本进程的设置窗口。layer 0 的小窗（< `minSize`，例如系统贴着文本光标显示的 64×64 输入法角标）
+    /// 不挖洞：洞是按窗口矩形挖的，比角标本身大得多，看起来就是“光标右边的毛玻璃没了”。
+    /// 它们只能压在被遮窗口的毛玻璃下面（同一层级里插不进覆盖层，见 README「设计上的取舍」）。
+    /// 1–3 层的小窗照常挖洞（它们本来就在覆盖层该在的位置之上/之下不好判定，统一按挖洞处理）。
     static func clearWindows(in list: [[String: Any]], processed: [WindowInfo], ownPID: pid_t) -> [ClearWindow] {
         let handled = Set(processed.map(\.id))
         var out: [ClearWindow] = []
@@ -87,7 +93,8 @@ enum WindowSnapshot {
                   layer >= 0, layer <= overlayLevel,
                   !(pid == ownPID && layer >= overlayLevel),
                   (w[kCGWindowAlpha as String] as? Double ?? 1) >= 0.05,
-                  let bounds = bounds(of: w), bounds.width >= 1, bounds.height >= 1
+                  let bounds = bounds(of: w), bounds.width >= 1, bounds.height >= 1,
+                  layer >= 1 || (bounds.width >= minSize && bounds.height >= minSize)
             else { continue }
             out.append(ClearWindow(order: index, bounds: bounds))
         }

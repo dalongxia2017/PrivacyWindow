@@ -207,7 +207,7 @@ enum SelfTest {
             entry(10, 500, 150, 200, 200, pid: 20),                        // 白名单 App 的窗口，压在 B 露出的部分上
             entry(11, 450, 250, 84, 77, pid: 21, layer: 3),                // 浮动面板
             entry(1, 0, 0, 400, 300, pid: 1),                              // A：焦点
-            entry(12, 450, 250, 120, 60, pid: 22),                         // 小窗（60 pt 高）
+            entry(12, 450, 420, 120, 60, pid: 22),                         // layer 0 的小窗（输入法角标一类）
             entry(2, 200, 200, 400, 300, pid: 2),                          // B：被遮
             entry(13, 300, 250, 100, 60, pid: 23),                         // 小窗（60 pt 高），垫在 B 下面
             entry(14, 0, 0, 1800, 1169, pid: 999, layer: 4),               // 本进程的覆盖层
@@ -221,9 +221,9 @@ enum SelfTest {
         let windows = WindowSnapshot.parse(list, ownPID: 999, whitelist: ["com.w"], blacklist: [], bundleIDForPID: info)
         expect("clear test setup: A and B are processed", windows.map(\.id) == [1, 2])
         let clear = WindowSnapshot.clearWindows(in: list, processed: windows, ownPID: 999)
-        // 白名单窗口、浮动面板、上面的小窗、下面的小窗、下面的设置窗口；不含覆盖层自己、菜单栏、小组件
-        expect("clear list = unprocessed windows at or below the overlay level",
-               clear.map(\.order) == [0, 1, 3, 5, 7])
+        // 白名单窗口、浮动面板、下面的设置窗口；不含覆盖层自己、菜单栏、小组件，也不含 layer 0 的小窗
+        expect("clear list = unprocessed windows at or below the overlay level (layer-0 ones must be full-size)",
+               clear.map(\.order) == [0, 1, 7])
         let regions = OverlayLayout.regions(windows: windows, focus: 1, clear: clear)
         let covered = regions[2] ?? []
         func coveredArea(_ rect: CGRect) -> CGFloat {
@@ -233,8 +233,9 @@ enum SelfTest {
                coveredArea(CGRect(x: 500, y: 150, width: 200, height: 200)) == 0)
         expect("floating panel (layer 3) above a covered window is never covered",
                coveredArea(CGRect(x: 450, y: 250, width: 84, height: 77)) == 0)
-        expect("small window above a covered window is never covered",
-               coveredArea(CGRect(x: 450, y: 250, width: 120, height: 60)) == 0)
+        // 洞是按窗口矩形挖的，比角标本身大得多，看起来就是“光标右边的毛玻璃没了”；所以小窗不挖，盖住就盖住
+        expect("small layer-0 window above a covered window does not punch a hole",
+               coveredArea(CGRect(x: 450, y: 420, width: 120, height: 60)) == 7200)
         expect("small window below does not punch a hole",
                coveredArea(CGRect(x: 300, y: 300, width: 100, height: 10)) == 1000)
         expect("settings window below does not punch a hole",
@@ -242,7 +243,7 @@ enum SelfTest {
         expect("covered window minus all the windows on top of it",
                regions[2] == RegionMath.subtract(CGRect(x: 200, y: 200, width: 400, height: 300),
                                                  [CGRect(x: 0, y: 0, width: 400, height: 300), CGRect(x: 500, y: 150, width: 200, height: 200),
-                                                  CGRect(x: 450, y: 250, width: 84, height: 77), CGRect(x: 450, y: 250, width: 120, height: 60)]))
+                                                  CGRect(x: 450, y: 250, width: 84, height: 77)]))
         // 修复前的行为：不挖这些洞，白名单窗口被盖 15000
         let before = OverlayLayout.regions(windows: windows, focus: 1)
         let beforeArea = (before[2] ?? []).reduce(CGFloat(0)) { sum, r in
@@ -250,6 +251,18 @@ enum SelfTest {
             return sum + (i.isNull ? 0 : i.width * i.height)
         }
         expect("regression: without clear windows the whitelisted window got covered", beforeArea == 15000)
+
+        // pid 30/31 的 App 在白名单里（只有 App 规则跳过的、或本进程的 layer-0 窗口才会走到“挖不挖洞”这一步）
+        func clearOrders(_ w: CGFloat, _ h: CGFloat, pid: pid_t, layer: Int = 0) -> [Int] {
+            let l: [[String: Any]] = [entry(1, 0, 0, 400, 300, pid: 1), entry(2, 100, 100, w, h, pid: pid, layer: layer)]
+            let info: (pid_t) -> (name: String, bundleID: String?) = { $0 == 1 ? ("A", "a") : ("W", "com.w") }
+            let parsed = WindowSnapshot.parse(l, ownPID: 999, whitelist: ["com.w"], blacklist: [], bundleIDForPID: info)
+            return WindowSnapshot.clearWindows(in: l, processed: parsed, ownPID: 999).map(\.order)
+        }
+        expect("whitelisted app's badge-sized window (64×64) does not punch a hole", clearOrders(64, 64, pid: 30) == [])
+        expect("layer-0 window one point under minSize does not punch a hole", clearOrders(80, 79, pid: 30) == [])
+        expect("whitelisted app's full-size window punches a hole", clearOrders(80, 80, pid: 30) == [1])
+        expect("small floating window (layer 3) still punches a hole", clearOrders(40, 20, pid: 31, layer: 3) == [1])
     }
 
     private static func hotKeyTitles() {
