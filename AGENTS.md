@@ -109,7 +109,7 @@ macOS 菜单栏工具：鼠标悬停的窗口保持清晰，同屏其它普通�
 python3 spike/smoke.py --all   # 端到端，见下
 ```
 
-- **打包 dmg 不要用 `hdiutil create`**：在这个沙盒里它对任何来源（包括空目录和空白镜像）都报 `create failed - 目錄不是空的`，而且沙盒不能写 `/Volumes`。`build.sh dmg` 走的是 `diskutil image create blank` → `diskutil image attach --mountPoint <项目内目录>` → `ditto` → `hdiutil detach` → `diskutil image create from … --format UDZO`。卸载一律用 `hdiutil detach <挂载点>`（`diskutil image detach` 不认挂载点路径）；挂上以后必须卸载，否则会留下一个空盘。
+- **打包 dmg 不要用 `hdiutil create`**：在这个沙盒里它对任何来源（包括空目录和空白镜像）都报 `create failed - 目錄不是空的`，而且沙盒不能写 `/Volumes`。`build.sh dmg` 走的是 `diskutil image create blank` → `diskutil image attach --mountPoint <项目内目录>` → `ditto` → `hdiutil detach` → `diskutil image create from … --format UDZO`。卸载一律用 `hdiutil detach <挂载点>`（`diskutil image detach` 不认挂载点路径）；挂上以后必须卸载，否则会留下一个空盘。**`hdiutil verify` 也会把镜像挂到 `/Volumes/<卷名>` 并且不弹出**，所以 `dmg()` 验完要再 `hdiutil detach "/Volumes/$VOL"`；每次打完 dmg 都用 `hdiutil info | grep -c '^/dev/disk'` 确认是 0。
 
 - 本机只有 Command Line Tools，没有 Xcode。`swiftc` 必须带
   `-module-cache-path build/mcache -clang-scanner-module-cache-path build/mcache/clang`，否则模块缓存目录被沙盒拒绝写入。`build.sh` 已经带了；手工编译 `spike/` 下的文件时记得加。

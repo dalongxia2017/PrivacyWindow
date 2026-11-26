@@ -84,7 +84,10 @@ dmg() {
 	rmdir "$mnt"
 	diskutil image create from "$rw" "$DMG" --format UDZO >/dev/null
 	rm -f "$rw"
+	# hdiutil verify 会把镜像挂在 /Volumes/<卷名> 下不弹出，验完要自己卸掉，否则留一个盘在桌面上
+	trap 'hdiutil detach "/Volumes/$VOL" >/dev/null 2>&1 || true' RETURN
 	hdiutil verify -quiet "$DMG"
+	trap - RETURN
 	echo "已生成 $DMG"
 }
 
