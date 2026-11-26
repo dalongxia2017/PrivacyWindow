@@ -72,6 +72,7 @@ final class SettingsWindowController: NSObject {
     private let tableHeight: CGFloat = 110
     private var materialPopup = NSPopUpButton()
     private var desktopPopup = NSPopUpButton()
+    private var idlePopup = NSPopUpButton()
     private var fullscreenCheck = NSButton(checkboxWithTitle: "", target: nil, action: nil)
     private var stageManagerCheck = NSButton(checkboxWithTitle: "", target: nil, action: nil)
     private var lowPowerCheck = NSButton(checkboxWithTitle: "", target: nil, action: nil)
@@ -162,6 +163,13 @@ final class SettingsWindowController: NSObject {
         desktopPopup.target = self
         desktopPopup.action = #selector(desktopChanged)
         stack.addArrangedSubview(row("鼠标在桌面", desktopPopup))
+
+        // 静止后重新模糊
+        idlePopup.addItems(withTitles: IdleTimeout.options.map(IdleTimeout.title))
+        idlePopup.target = self
+        idlePopup.action = #selector(idleChanged)
+        idlePopup.toolTip = "鼠标和键盘都这么久没动，清晰的窗口重新变模糊；动一下就恢复"
+        stack.addArrangedSubview(row("静止后重新模糊", idlePopup))
 
         // 快捷键
         hotkeyCheck = NSButton(checkboxWithTitle: "启用快捷键", target: self, action: #selector(hotkeyEnabledChanged))
@@ -367,6 +375,11 @@ final class SettingsWindowController: NSObject {
         settings.debounceMS = (debounceSlider.doubleValue / 10).rounded() * 10
     }
 
+    @objc private func idleChanged() {
+        let index = idlePopup.indexOfSelectedItem
+        if IdleTimeout.options.indices.contains(index) { settings.idleTimeout = IdleTimeout.options[index] }
+    }
+
     @objc private func desktopChanged() {
         let index = desktopPopup.indexOfSelectedItem
         if DesktopBehavior.allCases.indices.contains(index) { settings.desktopBehavior = DesktopBehavior.allCases[index] }
@@ -480,6 +493,7 @@ final class SettingsWindowController: NSObject {
     private func syncControls() {
         materialPopup.selectItem(at: BlurMaterial.allCases.firstIndex(of: settings.material) ?? 0)
         desktopPopup.selectItem(at: DesktopBehavior.allCases.firstIndex(of: settings.desktopBehavior) ?? 0)
+        idlePopup.selectItem(at: IdleTimeout.options.firstIndex(of: settings.idleTimeout) ?? 0)
         fullscreenCheck.state = settings.pauseOnFullscreen ? .on : .off
         stageManagerCheck.state = settings.pauseOnStageManager ? .on : .off
         lowPowerCheck.state = settings.lowPower ? .on : .off

@@ -18,12 +18,15 @@ final class AppController {
     private let selfcheck = CommandLine.arguments.contains("--open-settings")
     /// `--set stageManager=1`：假装台前调度已开启（本机没法在测试里真的打开它）
     private var stageManagerOverride: Bool?
+    /// `--set keyActivity=0`：静止判定只看鼠标（跑测试时不被同时敲键盘的人干扰）
+    private var idleTracker: IdleTracker
 
     init(settings: SettingsStore = .shared) {
         self.settings = settings
         self.mouseOverride = Self.parseMouseOverride()
         overlays = OverlayManager(settings: settings)
         resolver = FocusResolver(debounce: settings.debounce)
+        idleTracker = IdleTracker(timeout: settings.idleTimeout)
         settingsWindow = SettingsWindowController(settings: settings)
         NotificationCenter.default.addObserver(self, selector: #selector(settingsChanged),
                                                name: SettingsStore.didChange, object: nil)
@@ -101,6 +104,8 @@ final class AppController {
             case "whitelist": settings.whitelist = Self.splitList(value)
             case "blacklist": settings.blacklist = Self.splitList(value)
             case "invertWhitelist": settings.invertWhitelist = flag
+            case "idleTimeout": if let v = number { settings.idleTimeout = v }
+            case "keyActivity": IdleTracker.keyboardActivityEnabled = flag
             // `disableScreenAt=x;y`：关掉包含这个 CG 坐标的显示器
             case "disableScreenAt":
                 let xy = value.split(separator: ";").compactMap { Double($0) }
@@ -144,6 +149,7 @@ final class AppController {
                 "selfcheck: hotkey \(self.hotKeyState)",
                 "selfcheck: launchAtLogin \(self.launchAtLoginState)",
                 "selfcheck: screens \(self.settingsWindow.debugScreenChecks())",
+                "selfcheck: idle \(self.settings.idleTimeout > 0 ? IdleTimeout.title(for: self.settings.idleTimeout) : "off")",
             ]
             // 设置窗口必须永远清晰：真实窗口列表 + 本帧的焦点算一遍，盖到它身上的面积应为 0。
             // 对照：同样的列表不带 alwaysClearIDs（= 旧版的行为），面积应大于 0，否则这项检查什么也证明不了
@@ -221,6 +227,9 @@ final class AppController {
     func tick(now: TimeInterval = CACurrentMediaTime()) -> CGWindowID? {
         guard settings.enabled else { return nil }
         let mouse = mouseOverride?.current ?? Geometry.nsToCG(NSEvent.mouseLocation, mainHeight: Geometry.mainCG.height)
+        // 鼠标和键盘都静止够久：不再有清晰的窗口。一动鼠标或键盘，下一帧就按悬停重新判定
+        idleTracker.timeout = settings.idleTimeout
+        let idle = idleTracker.update(mouse: mouse, keyboardIdle: IdleTracker.keyboardIdleSeconds(), now: now)
         let windows = WindowSnapshot.fetch(ownPID: ProcessInfo.processInfo.processIdentifier,
                                            whitelist: Set(settings.whitelist), blacklist: Set(settings.blacklist),
                                            invertWhitelist: settings.invertWhitelist,
@@ -233,9 +242,15 @@ final class AppController {
            existing.contains(current) {
             candidate = current
         }
+        if idle { candidate = nil }
 
         resolver.debounce = settings.debounce
-        resolver.update(candidate: candidate, existing: existing, now: now)
+        if idle {
+            // 立即全部模糊，不等防抖和淡入淡出之外的延迟
+            if resolver.current != nil { resolver.reset() }
+        } else {
+            resolver.update(candidate: candidate, existing: existing, now: now)
+        }
 
         let screens = Self.connectedScreens()
         lastWindows = windows
@@ -285,7 +300,7 @@ final class AppController {
         guard traceCount % 15 == 0 else { return }
         let covered = overlays.coveredWindowIDs.sorted()
         let list = windowsDescription()
-        print("mouse CG=\(Int(mouse.x)),\(Int(mouse.y)) cand=\(candidate.map(String.init) ?? "nil") "
+        print("idle=\(idleTracker.isIdle ? 1 : 0) mouse CG=\(Int(mouse.x)),\(Int(mouse.y)) cand=\(candidate.map(String.init) ?? "nil") "
               + "focus=\(resolver.current.map(String.init) ?? "nil") covered=\(covered) paused=\(paused.sorted()) "
               + "overlayIgnoresMouse=\(overlays.allIgnoreMouse) windows=[\(list)]")
         fflush(stdout)

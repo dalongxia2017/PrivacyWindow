@@ -20,6 +20,7 @@ enum SelfTest {
         hotKeyTitles()
         stageManagerReader()
         defaultsRoundTrip()
+        idleTracker()
         print(failures == 0 ? "ALL PASSED (\(tests) tests)" : "FAILED: \(failures) assertion(s) in \(tests) tests")
         return failures == 0
     }
@@ -322,13 +323,59 @@ enum SelfTest {
         expect("fullscreen pause can be turned off", pause([side], fullscreen: false).isEmpty)
     }
 
+    private static func idleTracker() {
+        let p = CGPoint(x: 100, y: 100)
+        var off = IdleTracker(timeout: 0)
+        expect("idle watch off → never idle", !off.update(mouse: p, keyboardIdle: nil, now: 0)
+               && !off.update(mouse: p, keyboardIdle: nil, now: 10_000))
+
+        var t = IdleTracker(timeout: 10)
+        expect("first frame only records a baseline", !t.update(mouse: p, keyboardIdle: 1000, now: 0))
+        expect("still moving → not idle", !t.update(mouse: CGPoint(x: 101, y: 100), keyboardIdle: 1000, now: 5))
+        expect("not yet → not idle", !t.update(mouse: CGPoint(x: 101, y: 100), keyboardIdle: 1000, now: 14.9))
+        expect("mouse still for the timeout → idle", t.update(mouse: CGPoint(x: 101, y: 100), keyboardIdle: 1000, now: 15))
+        expect("stays idle", t.update(mouse: CGPoint(x: 101, y: 100), keyboardIdle: 1000, now: 40))
+        expect("one pixel of movement → active again", !t.update(mouse: CGPoint(x: 102, y: 100), keyboardIdle: 1000, now: 40.1))
+        expect("timer restarts from that movement", !t.update(mouse: CGPoint(x: 102, y: 100), keyboardIdle: 1000, now: 49)
+               && t.update(mouse: CGPoint(x: 102, y: 100), keyboardIdle: 1000, now: 50.2))
+
+        // 打字时鼠标不动：敲键算操作，正在编辑的窗口不能被糊掉
+        var k = IdleTracker(timeout: 10)
+        _ = k.update(mouse: p, keyboardIdle: 1000, now: 0)
+        expect("typing keeps it active", !k.update(mouse: p, keyboardIdle: 0.1, now: 9.9)
+               && !k.update(mouse: p, keyboardIdle: 0.2, now: 15) && !k.update(mouse: p, keyboardIdle: 0.3, now: 30))
+        expect("hands off the keyboard → idle after the timeout from the last key",
+               !k.update(mouse: p, keyboardIdle: 0.9, now: 30.6) && k.update(mouse: p, keyboardIdle: 9.9, now: 40.3))
+
+        // 拿不到键盘状态（nil）时只看鼠标
+        var n = IdleTracker(timeout: 10)
+        _ = n.update(mouse: p, keyboardIdle: nil, now: 0)
+        expect("keyboard state unavailable → mouse only", n.update(mouse: p, keyboardIdle: nil, now: 10))
+
+        // 设置改了：从 10 秒改成关闭、或改成 30 秒
+        var c = IdleTracker(timeout: 10)
+        _ = c.update(mouse: p, keyboardIdle: 1000, now: 0)
+        c.timeout = 0
+        expect("turning it off clears idle", !c.update(mouse: p, keyboardIdle: 1000, now: 20) && !c.isIdle)
+        c.timeout = 30
+        _ = c.update(mouse: p, keyboardIdle: 1000, now: 20)
+        expect("turned back on → timing starts from now", !c.update(mouse: p, keyboardIdle: 1000, now: 49)
+               && c.update(mouse: p, keyboardIdle: 1000, now: 50.1))
+
+        expect("idle timeout titles", IdleTimeout.title(for: 0) == "关闭" && IdleTimeout.title(for: 20) == "20 秒"
+               && IdleTimeout.title(for: 60) == "1 分钟" && IdleTimeout.title(for: 300) == "5 分钟")
+        expect("idle timeout is normalized to the offered options",
+               IdleTimeout.normalized(0) == 0 && IdleTimeout.normalized(45) == 60 && IdleTimeout.normalized(5) == 10
+               && IdleTimeout.normalized(9999) == 300 && IdleTimeout.normalized(-3) == 0)
+    }
+
     private static func defaultsRoundTrip() {
         let name = "PrivacyWindow.SelfTest.\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: name)!
         let a = SettingsStore(defaults: defaults)
         expect("defaults", a.enabled && a.material == .hudWindow && a.desktopBehavior == .keepLast
             && a.animationMS == 150 && a.debounceMS == 40 && a.pauseOnFullscreen && a.pauseOnStageManager
-            && !a.lowPower && a.hotkeyEnabled && a.hotkey == .default && a.overlayDimAlpha == 0.25)
+            && !a.lowPower && a.hotkeyEnabled && a.hotkey == .default && a.overlayDimAlpha == 0.25 && a.idleTimeout == 0)
         a.enabled = false
         a.material = .popover
         a.dimAlpha = 0.5
@@ -344,11 +391,12 @@ enum SelfTest {
         a.disabledScreens = [3]
         a.hotkeyEnabled = false
         a.hotkey = HotKey(keyCode: UInt32(kVK_F19), modifiers: 0)
+        a.idleTimeout = 60
         let b = SettingsStore(defaults: defaults)
         expect("persisted", !b.enabled && b.material == .popover && b.dimAlpha == 0.5
             && b.animationMS == 250 && b.debounceMS == 0 && b.whitelist == ["com.x"] && b.blacklist == ["com.p"]
             && b.desktopBehavior == .blurAll && !b.pauseOnFullscreen && b.lowPower && b.invertWhitelist
-            && b.disabledScreens == [3] && !b.hotkeyEnabled && b.hotkey.keyCode == UInt32(kVK_F19))
+            && b.disabledScreens == [3] && !b.hotkeyEnabled && b.hotkey.keyCode == UInt32(kVK_F19) && b.idleTimeout == 60)
         expect("low power forces dim ≥ 50%", b.overlayDimAlpha == 0.5)
         b.dimAlpha = 0.1
         expect("low power raises a too-light dim", b.overlayDimAlpha == SettingsStore.lowPowerMinDim)

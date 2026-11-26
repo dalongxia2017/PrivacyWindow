@@ -12,6 +12,7 @@
   screen off 设置里关掉的显示器完全不覆盖
   stage     台前调度开启（用 --set stageManager=1 模拟）时暂停覆盖
   switches  设置窗口里的快捷键 / 开机自启 / 显示器勾选框状态
+  idle      鼠标和键盘静止满设定秒数后清晰的窗口重新模糊，动一下就恢复
 
 黑名单 / 白名单只由 --selftest 覆盖：靶窗口 probe3 是裸二进制，没有 bundle id。
 真实按键没法在测试里注入（需要辅助功能权限），所以快捷键只验证“注册成功”。
@@ -162,6 +163,28 @@ def phase_inverted_whitelist():
     record("inverted whitelist leaves unlisted apps alone", covered > CLEAR_MIN, f"variance={covered:.0f}")
     covered, _, _ = measure_covered_then_focused(["--set", f"invertWhitelist=0,whitelist={ghost}"])
     record("same list without inversion behaves as before", covered < BLURRED_MAX, f"blurred={covered:.0f}")
+
+
+def phase_idle():
+    """静止后重新模糊：鼠标停在靶窗口上 → 清晰；2 秒不动 → 重新盖住；再挪 1px → 立刻恢复清晰。
+    keyActivity=0 关掉键盘检测，否则同时敲键盘的人会让它永远不静止。"""
+    near = f"{int(ON_TARGET.split(',')[0]) + 1},{ON_TARGET.split(',')[1]}"
+    app = start_app(["--mouse", f"{ON_TARGET};{near}@4500", "--set", "idleTimeout=2,keyActivity=0", "--trace"],
+                    log=open(os.path.join(ROOT, "build/app-idle.out"), "w"))
+    try:
+        time.sleep(1.0)
+        focused = variance()
+        time.sleep(2.4)                 # 静止满 2 秒 + 淡入 150ms
+        idle = variance()
+        time.sleep(1.6)                 # 4.5s 处挪 1px + 防抖 40ms + 淡出 150ms
+        back = variance()
+    finally:
+        stop(app)
+    trace = open(os.path.join(ROOT, "build/app-idle.out"), encoding="utf-8", errors="replace").read()
+    record("focused window blurs again after the idle timeout",
+           focused > CLEAR_MIN and idle < BLURRED_MAX and "idle=1" in trace,
+           f"focused={focused:.0f} idle={idle:.0f}")
+    record("moving the mouse brings focus back", back > CLEAR_MIN, f"variance={back:.0f}")
 
 
 def phase_stage_manager():
@@ -363,6 +386,7 @@ def main():
         phase_low_power()
         phase_screen_off()
         phase_inverted_whitelist()
+        phase_idle()
         phase_stage_manager()
         phase_settings()
         phase_hotkey_off()

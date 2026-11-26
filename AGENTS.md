@@ -83,6 +83,7 @@ macOS 菜单栏工具：鼠标悬停的窗口保持清晰，同屏其它普通�
 | 全局快捷键（Carbon `RegisterEventHotKey`） | 不需要 |
 | 开机自启（`SMAppService.mainApp`） | 不需要（未签名的 App 用户可能要在系统设置里允许一次） |
 | 读台前调度开关（`CFPreferencesCopyAppValue`） | 不需要 |
+| 读“上一次按键是什么时候”（`CGEventSource.secondsSinceLastEventType(.combinedSessionState, eventType: .keyDown)`） | 不需要（本机辅助功能未授权时实测直接返回、不弹窗）；只拿时间戳，不读按键内容 |
 | 窗口移动 / 缩放的事件通知（`AXObserver`） | **辅助功能** → 不用，改为轮询 |
 | 用 `CGEvent` 注入点击（自动化测试） | **辅助功能** → 测不了，只能人工验收 |
 | 截屏（ScreenCaptureKit） | **屏幕录制** → 不用 |
@@ -104,7 +105,7 @@ macOS 菜单栏工具：鼠标悬停的窗口保持清晰，同屏其它普通�
 
 ```bash
 ./build.sh build     # → build/PrivacyWindow.app；日志 build/build.log
-./build.sh test      # 构建 + --selftest（83 项，纯逻辑，不弹窗）
+./build.sh test      # 构建 + --selftest（98 项，纯逻辑，不弹窗）
 ./build.sh dmg       # ad-hoc 签名 + build/PrivacyWindow.dmg
 python3 spike/smoke.py --all   # 端到端，见下
 ```
@@ -148,6 +149,7 @@ Sources/
 ├── FocusResolver.swift            FocusResolver.update(candidate:existing:now:) 防抖
 ├── OverlayManager.swift           RegionMath.subtract、RoundedMask、OverlayItem、ScreenOverlay、OverlayManager
 ├── HotKey.swift                   HotKey（键码 + Carbon 修饰键）、HotKeyController（RegisterEventHotKey）、HotKeyRecorder（改键用的录入框）
+├── IdleWatch.swift               IdleTimeout（选项与标题）、IdleTracker（鼠标 + 键盘静止判定）、读上次按键时间
 ├── SystemState.swift              StageManager（读系统偏好 + Monitor 缓存）、LaunchAtLogin（SMAppService）
 ├── SettingsWindowController.swift 代码布局的设置窗口；AppListTableView（拖拽接收 .fileURL）
 ├── MenuBarController.swift        NSStatusItem + 菜单
@@ -160,6 +162,8 @@ Sources/
 NSEvent.mouseLocation ─nsToCG─▶ HitTest.candidate(windows:at:) ─▶ candidate: CGWindowID?   （pinned 和 alwaysClear 的窗口不当候选）
 WindowSnapshot.fetch ──────────┘            （layer 0、≥80pt、非本进程；白名单跳过，黑名单标 pinned；
                                             设置窗口按 alwaysClearIDs 保留，标 alwaysClear）
+IdleTracker.update(mouse:keyboardIdle:now:) → idle   （静止满 idleTimeout 秒；开着时每帧读一次“距上次按键多久”）
+    idle → candidate = nil、不走 keepLast 回退、resolver.reset()：立即全部模糊，不等防抖；一有操作就恢复正常流程
 candidate == nil 且 desktopBehavior == .keepLast → 沿用 resolver.current（鼠标在黑名单窗口上也算 candidate == nil）
 FocusResolver.update(candidate:existing:now:) → resolver.current
 PausePolicy.pausedScreens(...) → Set<CGDirectDisplayID>
@@ -176,11 +180,12 @@ OverlayManager.update(windows:focus:pausedScreens:)
 - **`HotKey`** 用 Carbon 的 `RegisterEventHotKey`（零权限）。`HotKey.isValid` 要求要么带修饰键，要么是不产出字符的键（F 键、方向键、Home/End/PageUp/PageDown/Help）——否则打字就会触发。键名表 `HotKey.keyNames` 用 `kVK_*` 常量，**不要手写键码数字**。Carbon 的 `cmdKey` 等常量在 Swift 里是 `Int`，要先转 `UInt32`。
 - **`StageManager.Monitor`** 每 2 s 读一次偏好并缓存，不要每帧读（`CFPreferencesCopyAppValue` 没那么便宜，而且读的是别的进程的域）。
 - **`SettingsStore.overlayDimAlpha`**：低性能模式 = 隐藏 `NSVisualEffectView`，暗化取 `max(dimAlpha, lowPowerMinDim)`（`lowPowerMinDim = 0.5`）。用户把暗化调到 0 再开低性能，仍然要保证看不清。
+- **`IdleTracker`**（`IdleWatch.swift`）：`timeout <= 0` 永不静止；第一帧只记基线；鼠标位置变了（和上一帧逐点比较）或 `keyboardIdle < keyActiveWindow`(0.5 s) 就刷新 `lastActivityAt`；`now - lastActivityAt >= timeout` 即静止。静止期间 `AppController` 直接 `resolver.reset()`，所以是立即全模糊而不是淡出。默认关闭（`pw.idleTimeout = 0`），选项 `[0, 10, 20, 30, 60, 120, 300]`，不在选项里的值由 `IdleTimeout.normalized` 归一。只看鼠标是不够的：打字时鼠标不动，正在编辑的窗口不能被糊掉，所以键盘也算活动；读的是 `CGEventSource.secondsSinceLastEventType(.combinedSessionState, eventType: .keyDown)`，零权限。滚动轮不移动光标也不算按键，所以只滚滚动轮仍会被判静止——已知，写进了 README 常见问题。
 - **`FocusResolver`** 是 struct，`debounce <= 0` 时立即切换；候选窗口消失（`existing` 不含）时立即清空，不防抖。
 - **`RegionMath.subtract(rect, holes)`**：被遮窗口的覆盖区域要减去 z 序在它上面的所有窗口矩形（含焦点窗口）。否则被遮窗口伸到焦点窗口下面的部分会把焦点窗口也糊掉——这是实测踩到的坑。
 - **`OverlayManager`**：每屏一个 `ScreenOverlay`（全屏透明窗口，level = `CGWindowLevelForKey(.floatingWindow) + 1`，`collectionBehavior` 含 `.canJoinAllSpaces .fullScreenAuxiliary .stationary .ignoresCycle`）。`items: [CGWindowID: [OverlayItem]]`，块数相同就原地改 frame，不同才重建；淡出中的块不重复启动淡出。窗口 frame 直接设、不做动画（跟随要快），alpha 走 `animator()`。
 - **`OverlayItem`** = `NSVisualEffectView`（`.behindWindow` + `.active`，`maskImage` 圆角 10）+ 黑色暗化 view，两个都是覆盖层窗口的直接子视图。
-- **设置窗口**用 `NSStackView` 代码布局，四边都有约束，窗口按 `contentView.fittingSize` 定尺寸（最小 480×590），当前实测 480×787（含标题栏，白名单反转勾上时 480×801）；加了新行后要确认它仍放得进 1169 高的屏幕（smoke 的 `settings window fits on screen`）。
+- **设置窗口**用 `NSStackView` 代码布局，四边都有约束，窗口按 `contentView.fittingSize` 定尺寸（最小 480×590），当前实测 480×823（含标题栏，白名单反转勾上时再高约 14）；加了新行后要确认它仍放得进 1169 高的屏幕（smoke 的 `settings window fits on screen`）。
 - **菜单栏**在 `AppController.start()` 里创建，不在 `init` 里——init 阶段 `self` 还没初始化完，闭包不能捕获它。
 
 ### 调试参数（只在命令行显式传入时生效）
@@ -188,9 +193,9 @@ OverlayManager.update(windows:focus:pausedScreens:)
 | 参数 | 作用 |
 |---|---|
 | `--mouse "x,y[;x,y@毫秒…]"` | 用给定 CG 坐标代替真实鼠标；`@毫秒` = 启动后多久切到这个点 |
-| `--set key=value,…` | 覆盖设置：`enabled material dimAlpha animationMS debounceMS desktopBehavior pauseOnFullscreen pauseOnStageManager lowPower hotkeyEnabled hotkeyCode hotkeyModifiers whitelist blacklist invertWhitelist disableScreenAt=x;y stageManager=1`（`stageManager=1` 只是注入“开着”的标志，不改系统偏好） |
-| `--trace` | 每 15 帧打印 `mouse cand focus covered overlayIgnoresMouse windows`；焦点 / 被遮集合 / 暂停屏一变化就打一行 `t=… focus=… covered=… paused=…` |
-| `--open-settings` | 启动 2 s 后打开设置并打印 `selfcheck: …`（settingsWindow / settingsWindowSize / statusItem / overlayWindows / overlayIgnoresMouse / hotkey / launchAtLogin / screens / settingsWindowClear / contentFits）。`settingsWindowClear ok control:N`：设置窗口上被盖面积应为 0，control 是不带 `alwaysClearIDs` 的对照（旧逻辑的面积，应 > 0） |
+| `--set key=value,…` | 覆盖设置：`enabled material dimAlpha animationMS debounceMS desktopBehavior pauseOnFullscreen pauseOnStageManager lowPower hotkeyEnabled hotkeyCode hotkeyModifiers whitelist blacklist invertWhitelist disableScreenAt=x;y stageManager=1 idleTimeout=<秒> keyActivity=0|1`（`stageManager=1` 只是注入“开着”的标志，不改系统偏好；`keyActivity=0` 关掉键盘检测，自动化测试用，免得同时敲键盘的人让它永不静止） |
+| `--trace` | 每 15 帧打印 `idle mouse cand focus covered overlayIgnoresMouse windows`；焦点 / 被遮集合 / 暂停屏一变化就打一行 `t=… focus=… covered=… paused=…` |
+| `--open-settings` | 启动 2 s 后打开设置并打印 `selfcheck: …`（settingsWindow / settingsWindowSize / statusItem / overlayWindows / overlayIgnoresMouse / hotkey / launchAtLogin / screens / idle / settingsWindowClear / contentFits）。`idle off` 或 `idle <选项标题>`。`settingsWindowClear ok control:N`：设置窗口上被盖面积应为 0，control 是不带 `alwaysClearIDs` 的对照（旧逻辑的面积，应 > 0） |
 | `--smoke <秒>` | 到点自动退出 |
 | `--toggle/--enable/--disable` | 通过 `DistributedNotificationCenter`（`com.dalongxia2017.PrivacyWindow.command`）发给运行中的实例，自己退出 |
 
@@ -223,6 +228,8 @@ OverlayManager.update(windows:focus:pausedScreens:)
 | 私有 `CAFilter` 在 macOS 27 上还能不能用 | 没测。做实验开关之前要先用 MaterialView 的代码单独探针 |
 | Intel 机型、macOS 14–26 | 兼容性验证还没做，排在下一步第 8 项 |
 | 点击穿透 | 不做自动化：覆盖层在鼠标移到上方时自动让位，人工验收即可 |
+| 读“上次按键时间”在全新账户上是否也完全不弹窗 | 本机（辅助功能未授权）实测直接返回、不弹窗；没有在全新账户上试过 |
+| 只滚滚动轮 / 触控板滚动时的静止判定 | 按现在的逻辑会被判静止（光标不移动、无按键）。要不要把滚动也算活动，等实际用下来再定 |
 
 ## 下一步
 
@@ -245,7 +252,7 @@ OverlayManager.update(windows:focus:pausedScreens:)
 
 做过但不做的：真实点击穿透的自动化测试（没有辅助功能权限注入不了点击；覆盖层一有鼠标经过就让位，实际没有影响）。
 
-变更记录：第一轮 调研 + 架构选型 → 第二轮 最小程序（焦点毛玻璃、设置、菜单栏、开关）→ 第三轮 快捷键、低性能模式、按屏开关、开机自启、黑白名单、台前调度暂停；调研和计划并入 README 与本文 → 第四轮 白名单反转（只给列表里的 App 盖毛玻璃）→ 第五轮 回滚 → 第六轮 设置窗口永远清晰（`alwaysClear`，只对这一个窗口）。
+变更记录：第一轮 调研 + 架构选型 → 第二轮 最小程序（焦点毛玻璃、设置、菜单栏、开关）→ 第三轮 快捷键、低性能模式、按屏开关、开机自启、黑白名单、台前调度暂停；调研和计划并入 README 与本文 → 第四轮 白名单反转（只给列表里的 App 盖毛玻璃）→ 第五轮 回滚 → 第六轮 设置窗口永远清晰（`alwaysClear`，只对这一个窗口）→ 第七轮 静止后重新模糊（`IdleTracker`，默认关闭）。
 
 - **设置窗口永远清晰**（`WindowInfo.alwaysClear`）：`SettingsWindowController.alwaysClearWindowIDs` 在窗口可见时给出它的窗口 id，`parse` 对这些 id 放行本进程过滤并标 `alwaysClear`（放在白名单 / 反转判断之前，所以不受名单影响）。`OverlayLayout.regions` 把 `alwaysClear` 的窗口**不论 z 序一律当洞、自己不盖**；`HitTest` 不选它当焦点。不按 z 序挖也可以：盖在它上面的普通窗口自己照常被遮，不会漏出清晰的一块。`existing`（keepLast 回退用）要滤掉 alwaysClear 的窗口。这和第五轮的通用挖洞不同：只认这一个窗口 id，别的“不处理的窗口”仍然会被连带糊掉。
 

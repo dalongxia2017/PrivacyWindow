@@ -103,6 +103,8 @@ final class SettingsStore {
     /// 不做覆盖的屏幕（显示器 id）
     var disabledScreens: [CGDirectDisplayID] { didSet { save(disabledScreens.map(Int.init), "disabledScreens") } }
     var hotkeyEnabled: Bool { didSet { save(hotkeyEnabled, "hotkeyEnabled") } }
+    /// 鼠标和键盘都静止多少秒后，清晰的窗口重新变模糊；0 = 关闭
+    var idleTimeout: TimeInterval { didSet { save(idleTimeout, "idleTimeout") } }
     var hotkey: HotKey { didSet { save(Int(hotkey.keyCode), "hotkeyCode"); save(Int(hotkey.modifiers), "hotkeyModifiers") } }
 
     /// 低性能模式下不模糊，遮罩要够深才挡得住文字
@@ -130,6 +132,7 @@ final class SettingsStore {
         lowPower = get("lowPower") as? Bool ?? false
         disabledScreens = (get("disabledScreens") as? [Int] ?? []).map { CGDirectDisplayID($0) }
         hotkeyEnabled = get("hotkeyEnabled") as? Bool ?? true
+        idleTimeout = IdleTimeout.normalized(get("idleTimeout") as? Double ?? 0)
         let keyCode = get("hotkeyCode") as? Int ?? Int(HotKey.default.keyCode)
         let modifiers = get("hotkeyModifiers") as? Int ?? Int(HotKey.default.modifiers)
         hotkey = HotKey(keyCode: UInt32(keyCode), modifiers: UInt32(modifiers))
