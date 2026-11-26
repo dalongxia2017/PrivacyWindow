@@ -9,6 +9,8 @@ struct WindowInfo: Equatable {
     let bundleID: String?
     /// 黑名单里的窗口：始终盖毛玻璃，鼠标移上去也不会成为焦点
     var pinned = false
+    /// 永远清晰的窗口（本程序的设置窗口）：不当焦点，也不盖，叠在谁上面谁那一块就露出
+    var alwaysClear = false
 }
 
 /// NS（左下角原点，Y 向上）与 CG（左上角原点，Y 向下）的全局坐标互换。
@@ -43,24 +45,27 @@ enum WindowSnapshot {
 
     /// 当前 Space 上的可处理窗口，数组顺序即 z 序（前 → 后）。
     /// 不需要任何权限：只有窗口标题受录屏权限保护，这里不读它。
-    static func fetch(ownPID: pid_t, whitelist: Set<String>, blacklist: Set<String>, invertWhitelist: Bool = false) -> [WindowInfo] {
+    /// `alwaysClearIDs`：本进程里要永远清晰的窗口（设置窗口）。它们留在 z 序里，但不盖、也不当焦点。
+    static func fetch(ownPID: pid_t, whitelist: Set<String>, blacklist: Set<String>, invertWhitelist: Bool = false,
+                      alwaysClearIDs: Set<CGWindowID> = []) -> [WindowInfo] {
         let options: CGWindowListOption = [.optionOnScreenOnly, .excludeDesktopElements]
         guard let list = CGWindowListCopyWindowInfo(options, kCGNullWindowID) as? [[String: Any]] else { return [] }
         return parse(list, ownPID: ownPID, whitelist: invertWhitelist ? [] : whitelist, blacklist: blacklist,
-                     only: invertWhitelist ? whitelist : nil, bundleIDForPID: appInfo)
+                     only: invertWhitelist ? whitelist : nil, alwaysClearIDs: alwaysClearIDs, bundleIDForPID: appInfo)
     }
 
     /// `bundleIDForPID` 的返回值是 (显示名, bundle id)。
     /// 白名单里的 App 直接不处理（永远清晰）；黑名单里的 App 保留并标记 `pinned`（永远模糊）。
     /// `only` 非 nil 时反过来（白名单反转）：只有列表里的 App 才处理，其余全部丢掉；列表为空就什么都不处理。
+    /// `alwaysClearIDs` 里的窗口即使是本进程的也保留（按 z 序原位），标记 `alwaysClear`。
     static func parse(_ list: [[String: Any]], ownPID: pid_t, whitelist: Set<String>, blacklist: Set<String>, only: Set<String>? = nil,
-                      bundleIDForPID: (pid_t) -> (name: String, bundleID: String?)) -> [WindowInfo] {
+                      alwaysClearIDs: Set<CGWindowID> = [], bundleIDForPID: (pid_t) -> (name: String, bundleID: String?)) -> [WindowInfo] {
         var out: [WindowInfo] = []
         for w in list {
             guard let id = w[kCGWindowNumber as String] as? CGWindowID,
                   let pid = w[kCGWindowOwnerPID as String] as? pid_t,
                   (w[kCGWindowLayer as String] as? Int) == 0,
-                  pid != ownPID
+                  pid != ownPID || alwaysClearIDs.contains(id)
             else { continue }
             guard let b = w[kCGWindowBounds as String] as? [String: NSNumber],
                   let x = b["X"]?.doubleValue, let y = b["Y"]?.doubleValue,
@@ -72,6 +77,11 @@ enum WindowSnapshot {
             let app = bundleIDForPID(pid)
             if let bid = app.bundleID, whitelist.contains(bid) { continue }
             // 反转模式：没有 bundle id 的进程（命令行程序等）认不出来，也不处理
+            if alwaysClearIDs.contains(id) {
+                out.append(WindowInfo(id: id, bounds: CGRect(x: x, y: y, width: width, height: height),
+                                      pid: pid, ownerName: app.name, bundleID: app.bundleID, alwaysClear: true))
+                continue
+            }
             if let only {
                 // 没有 bundle id 的进程（命令行程序等）认不出来，也不处理
                 guard let bid = app.bundleID, only.contains(bid) else { continue }
@@ -96,6 +106,6 @@ enum WindowSnapshot {
 /// 黑名单窗口不算候选：鼠标停在它上面时，保持上一个焦点窗口清晰（或按桌面行为全部模糊）。
 enum HitTest {
     static func candidate(windows: [WindowInfo], at point: CGPoint) -> WindowInfo? {
-        windows.first { !$0.pinned && $0.bounds.contains(point) }
+        windows.first { !$0.pinned && !$0.alwaysClear && $0.bounds.contains(point) }
     }
 }

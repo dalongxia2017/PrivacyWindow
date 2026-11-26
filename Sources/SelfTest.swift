@@ -16,6 +16,7 @@ enum SelfTest {
         pausePolicy()
         splitViewLayout()
         pinnedWindows()
+        alwaysClearWindows()
         hotKeyTitles()
         stageManagerReader()
         defaultsRoundTrip()
@@ -89,6 +90,73 @@ enum SelfTest {
         expect("inverted whitelist with an empty list covers nothing", none.isEmpty)
         let some = WindowSnapshot.parse(list, ownPID: 999, whitelist: [], blacklist: [], only: ["com.d"]) { names[$0] ?? ("?", nil) }
         expect("listed app becomes a normal (focusable, covered) window when inverted", some.map(\.id) == [6] && some.first?.pinned == false)
+    }
+
+    private static func area(_ rects: [CGRect]) -> CGFloat {
+        rects.reduce(CGFloat(0)) { $0 + $1.width * $1.height }
+    }
+
+    /// 若干矩形并集的面积：外接矩形减去这些洞之后剩下的就是并集
+    private static func unionArea(_ rects: [CGRect]) -> CGFloat {
+        guard let first = rects.first else { return 0 }
+        let box = rects.reduce(first) { $0.union($1) }
+        return box.width * box.height - area(RegionMath.subtract(box, rects))
+    }
+
+    private static func alwaysClearWindows() {
+        let big = WindowInfo(id: 1, bounds: CGRect(x: 0, y: 0, width: 1000, height: 800), pid: 10, ownerName: "b", bundleID: "com.b")
+        let other = WindowInfo(id: 3, bounds: CGRect(x: 400, y: 500, width: 400, height: 300), pid: 12, ownerName: "o", bundleID: "com.o")
+        var settings = WindowInfo(id: 5, bounds: CGRect(x: 100, y: 100, width: 480, height: 600), pid: 999, ownerName: "me", bundleID: "me")
+        settings.alwaysClear = true
+        // 设置窗口在上面：它压着的两个窗口各挖掉一块，自己不盖
+        let regions = OverlayLayout.regions(windows: [settings, other, big], focus: nil)
+        expect("settings window itself is never covered", regions[5] == nil)
+        expect("window partly under the settings window is covered minus the overlap",
+               area(regions[3] ?? []) == other.bounds.width * other.bounds.height
+                                        - unionArea([settings.bounds.intersection(other.bounds)]))
+        expect("window under the settings window and another window is covered minus both",
+               area(regions[1] ?? []) == big.bounds.width * big.bounds.height - unionArea([settings.bounds, other.bounds]))
+        expect("nothing is covered where the settings window is",
+               area(regions.values.flatMap { $0 }.compactMap { r -> CGRect? in
+                   let hit = r.intersection(settings.bounds); return hit.isNull ? nil : hit
+               }) == 0)
+        // 设置窗口被别的窗口压住：它自己照样不盖；压在上面的那个窗口照常盖住，所以看不出区别
+        let below = OverlayLayout.regions(windows: [other, settings, big], focus: nil)
+        expect("settings window below another window is still never covered", below[5] == nil)
+        expect("window above the settings window is still covered in full", below[3] == [other.bounds])
+        expect("bottom window is covered minus the settings window and the window in front",
+               area(below[1] ?? []) == big.bounds.width * big.bounds.height - unionArea([settings.bounds, other.bounds]))
+        // 压在上面的窗口成为焦点时它清晰，设置窗口仍然不被盖
+        let front = OverlayLayout.regions(windows: [other, settings, big], focus: 3)
+        expect("focused window in front of the settings window is clear, settings window stays clear",
+               front[3] == nil && front[5] == nil
+                && area(front[1] ?? []) == big.bounds.width * big.bounds.height - unionArea([settings.bounds, other.bounds]))
+        // 鼠标停在设置窗口上：它不是焦点，下面的窗口按“没有焦点”处理
+        expect("settings window is never the focus", HitTest.candidate(windows: [settings, big], at: CGPoint(x: 200, y: 200))?.id == 1)
+        expect("settings window under the mouse → nil when nothing else is there",
+               HitTest.candidate(windows: [settings], at: CGPoint(x: 200, y: 200)) == nil)
+        // 焦点是别的窗口时，设置窗口照样是洞
+        let focused = OverlayLayout.regions(windows: [settings, big], focus: 1)
+        expect("settings window stays clear when another window is focused",
+               focused[5] == nil && focused[1] == nil)
+
+        // 真实列表：本进程的窗口默认被丢掉，在 alwaysClearIDs 里的才留下
+        let list: [[String: Any]] = [
+            entry(5, 100, 100, 480, 600, pid: 999),      // 自己的设置窗口
+            entry(9, 0, 0, 1800, 1100, pid: 20),         // 别人的窗口
+        ]
+        let names: [pid_t: (String, String?)] = [999: ("me", "me"), 20: ("T", "com.t")]
+        let dropped = WindowSnapshot.parse(list, ownPID: 999, whitelist: [], blacklist: [], bundleIDForPID: { names[$0] ?? ("?", nil) })
+        expect("own window is dropped unless listed as always clear", dropped.map(\.id) == [9])
+        let kept = WindowSnapshot.parse(list, ownPID: 999, whitelist: [], blacklist: [], alwaysClearIDs: [5], bundleIDForPID: { names[$0] ?? ("?", nil) })
+        expect("own window listed as always clear is kept in z-order", kept.map(\.id) == [5, 9])
+        expect("kept own window is flagged alwaysClear and not pinned", kept.first?.alwaysClear == true && kept.first?.pinned == false)
+        // 反转白名单时它也不受影响（反转只认 bundle id，本进程的窗口本来认不出）
+        let inverted = WindowSnapshot.parse(list, ownPID: 999, whitelist: [], blacklist: [], only: ["com.t"], alwaysClearIDs: [5],
+                                            bundleIDForPID: { names[$0] ?? ("?", nil) })
+        expect("settings window survives whitelist inversion", inverted.map(\.id) == [5, 9])
+        let listed = OverlayLayout.regions(windows: kept, focus: nil)
+        expect("real-list layout leaves the settings window clear", listed[5] == nil && area(listed[9] ?? []) == 1800 * 1100 - 480 * 600)
     }
 
     private static func hitTest() {

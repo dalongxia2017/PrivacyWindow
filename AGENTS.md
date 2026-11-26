@@ -104,7 +104,7 @@ macOS 菜单栏工具：鼠标悬停的窗口保持清晰，同屏其它普通�
 
 ```bash
 ./build.sh build     # → build/PrivacyWindow.app；日志 build/build.log
-./build.sh test      # 构建 + --selftest（67 项，纯逻辑，不弹窗）
+./build.sh test      # 构建 + --selftest（83 项，纯逻辑，不弹窗）
 ./build.sh dmg       # ad-hoc 签名 + build/PrivacyWindow.dmg
 python3 spike/smoke.py --all   # 端到端，见下
 ```
@@ -157,8 +157,9 @@ Sources/
 数据流（每帧 60 Hz，关闭时降到 4 Hz）：
 
 ```
-NSEvent.mouseLocation ─nsToCG─▶ HitTest.candidate(windows:at:) ─▶ candidate: CGWindowID?
-WindowSnapshot.fetch ──────────┘            （layer 0、≥80pt、非本进程；白名单跳过，黑名单标 pinned）
+NSEvent.mouseLocation ─nsToCG─▶ HitTest.candidate(windows:at:) ─▶ candidate: CGWindowID?   （pinned 和 alwaysClear 的窗口不当候选）
+WindowSnapshot.fetch ──────────┘            （layer 0、≥80pt、非本进程；白名单跳过，黑名单标 pinned；
+                                            设置窗口按 alwaysClearIDs 保留，标 alwaysClear）
 candidate == nil 且 desktopBehavior == .keepLast → 沿用 resolver.current（鼠标在黑名单窗口上也算 candidate == nil）
 FocusResolver.update(candidate:existing:now:) → resolver.current
 PausePolicy.pausedScreens(...) → Set<CGDirectDisplayID>
@@ -189,7 +190,7 @@ OverlayManager.update(windows:focus:pausedScreens:)
 | `--mouse "x,y[;x,y@毫秒…]"` | 用给定 CG 坐标代替真实鼠标；`@毫秒` = 启动后多久切到这个点 |
 | `--set key=value,…` | 覆盖设置：`enabled material dimAlpha animationMS debounceMS desktopBehavior pauseOnFullscreen pauseOnStageManager lowPower hotkeyEnabled hotkeyCode hotkeyModifiers whitelist blacklist invertWhitelist disableScreenAt=x;y stageManager=1`（`stageManager=1` 只是注入“开着”的标志，不改系统偏好） |
 | `--trace` | 每 15 帧打印 `mouse cand focus covered overlayIgnoresMouse windows`；焦点 / 被遮集合 / 暂停屏一变化就打一行 `t=… focus=… covered=… paused=…` |
-| `--open-settings` | 启动 2 s 后打开设置并打印 `selfcheck: …`（settingsWindow / settingsWindowSize / statusItem / overlayWindows / overlayIgnoresMouse / hotkey / launchAtLogin / screens / contentFits） |
+| `--open-settings` | 启动 2 s 后打开设置并打印 `selfcheck: …`（settingsWindow / settingsWindowSize / statusItem / overlayWindows / overlayIgnoresMouse / hotkey / launchAtLogin / screens / settingsWindowClear / contentFits）。`settingsWindowClear ok control:N`：设置窗口上被盖面积应为 0，control 是不带 `alwaysClearIDs` 的对照（旧逻辑的面积，应 > 0） |
 | `--smoke <秒>` | 到点自动退出 |
 | `--toggle/--enable/--disable` | 通过 `DistributedNotificationCenter`（`com.dalongxia2017.PrivacyWindow.command`）发给运行中的实例，自己退出 |
 
@@ -244,7 +245,9 @@ OverlayManager.update(windows:focus:pausedScreens:)
 
 做过但不做的：真实点击穿透的自动化测试（没有辅助功能权限注入不了点击；覆盖层一有鼠标经过就让位，实际没有影响）。
 
-变更记录：第一轮 调研 + 架构选型 → 第二轮 最小程序（焦点毛玻璃、设置、菜单栏、开关）→ 第三轮 快捷键、低性能模式、按屏开关、开机自启、黑白名单、台前调度暂停；调研和计划并入 README 与本文 → 第四轮 白名单反转（只给列表里的 App 盖毛玻璃）→ 第五轮 回滚。
+变更记录：第一轮 调研 + 架构选型 → 第二轮 最小程序（焦点毛玻璃、设置、菜单栏、开关）→ 第三轮 快捷键、低性能模式、按屏开关、开机自启、黑白名单、台前调度暂停；调研和计划并入 README 与本文 → 第四轮 白名单反转（只给列表里的 App 盖毛玻璃）→ 第五轮 回滚 → 第六轮 设置窗口永远清晰（`alwaysClear`，只对这一个窗口）。
+
+- **设置窗口永远清晰**（`WindowInfo.alwaysClear`）：`SettingsWindowController.alwaysClearWindowIDs` 在窗口可见时给出它的窗口 id，`parse` 对这些 id 放行本进程过滤并标 `alwaysClear`（放在白名单 / 反转判断之前，所以不受名单影响）。`OverlayLayout.regions` 把 `alwaysClear` 的窗口**不论 z 序一律当洞、自己不盖**；`HitTest` 不选它当焦点。不按 z 序挖也可以：盖在它上面的普通窗口自己照常被遮，不会漏出清晰的一块。`existing`（keepLast 回退用）要滤掉 alwaysClear 的窗口。这和第五轮的通用挖洞不同：只认这一个窗口 id，别的“不处理的窗口”仍然会被连带糊掉。
 
 **第五轮回滚掉的东西，不要按原思路重做**（提交 04c90ea、d91119e 里有完整实现，可以查，但不要再合回来）：
 

@@ -137,12 +137,13 @@ enum OverlayLayout {
     /// `windows` 是 z 序（前 → 后）；`focus` 是保持清晰的窗口 id。
     /// 被遮窗口伸到别的窗口下面的那部分不能盖：盖了会把上面那个窗口也糊掉。
     /// 所以每个窗口只遮“自己的矩形 减去 z 序在它上面的所有窗口”。焦点窗口不算被遮，
-    /// 但它的矩形同样要从下面的窗口里挖掉。
+    /// 但它的矩形同样要从下面的窗口里挖掉。`alwaysClear` 的窗口（设置窗口）永远算洞，不管它在 z 序的哪一层：
+    /// 盖在它上面的普通窗口自己照常被遮（它们是焦点时本来就清晰），所以不会因此漏出清晰的一块。
     static func regions(windows: [WindowInfo], focus: CGWindowID?) -> [CGWindowID: [CGRect]] {
         var holes: [CGRect] = []
         var regions: [CGWindowID: [CGRect]] = [:]
         for w in windows {
-            if w.id == focus && !w.pinned {
+            if w.alwaysClear || (w.id == focus && !w.pinned) {   // 焦点窗口和设置窗口都只挖洞、不盖
                 holes.append(w.bounds)
             } else {
                 regions[w.id] = RegionMath.subtract(w.bounds, holes)

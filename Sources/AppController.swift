@@ -145,6 +145,26 @@ final class AppController {
                 "selfcheck: launchAtLogin \(self.launchAtLoginState)",
                 "selfcheck: screens \(self.settingsWindow.debugScreenChecks())",
             ]
+            // 设置窗口必须永远清晰：真实窗口列表 + 本帧的焦点算一遍，盖到它身上的面积应为 0。
+            // 对照：同样的列表不带 alwaysClearIDs（= 旧版的行为），面积应大于 0，否则这项检查什么也证明不了
+            if let rect = self.settingsWindow.alwaysClearRect {
+                let mouse = self.mouseOverride?.current ?? Geometry.nsToCG(NSEvent.mouseLocation, mainHeight: Geometry.mainCG.height)
+                var results: [String] = []
+                for clear in [true, false] {
+                    let list = WindowSnapshot.fetch(ownPID: ProcessInfo.processInfo.processIdentifier,
+                                                    whitelist: Set(self.settings.whitelist), blacklist: Set(self.settings.blacklist),
+                                                    invertWhitelist: self.settings.invertWhitelist,
+                                                    alwaysClearIDs: clear ? self.settingsWindow.alwaysClearWindowIDs : [])
+                    let focus = HitTest.candidate(windows: list, at: mouse)?.id
+                    let covered = OverlayLayout.regions(windows: list, focus: focus).values.flatMap { $0 }
+                    let area = covered.reduce(CGFloat(0)) { sum, r in
+                        let hit = r.intersection(rect)
+                        return sum + (hit.isNull ? 0 : hit.width * hit.height)
+                    }
+                    results.append(clear ? (area == 0 ? "ok" : "covered:\(Int(area))") : "control:\(Int(area))")
+                }
+                lines.append("selfcheck: settingsWindowClear \(results.joined(separator: " "))")
+            }
             if let content = self.settingsWindow.window.contentView, content.subviews.first is NSStackView {
                 let fit = content.fittingSize
                 lines.append("selfcheck: contentFits \(fit.height <= content.bounds.height + 1 ? "ok" : "clip:\(Int(fit.height))>\(Int(content.bounds.height))")")
@@ -203,8 +223,9 @@ final class AppController {
         let mouse = mouseOverride?.current ?? Geometry.nsToCG(NSEvent.mouseLocation, mainHeight: Geometry.mainCG.height)
         let windows = WindowSnapshot.fetch(ownPID: ProcessInfo.processInfo.processIdentifier,
                                            whitelist: Set(settings.whitelist), blacklist: Set(settings.blacklist),
-                                           invertWhitelist: settings.invertWhitelist)
-        let existing = Set(windows.map(\.id))
+                                           invertWhitelist: settings.invertWhitelist,
+                                           alwaysClearIDs: settingsWindow.alwaysClearWindowIDs)
+        let existing = Set(windows.filter { !$0.alwaysClear }.map(\.id))
 
         var candidate = HitTest.candidate(windows: windows, at: mouse)?.id
         // 鼠标在桌面 / 菜单栏 / Dock / 黑名单窗口上：保持上一个焦点窗口清晰

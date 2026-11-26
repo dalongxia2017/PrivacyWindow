@@ -456,6 +456,18 @@ final class SettingsWindowController: NSObject {
     }
 
     /// 给 `--open-settings` 的自检用：每块屏一行“id:开/关”
+    /// 设置窗口永远清晰：可见时把它的窗口 id 交给窗口快照，按 z 序留在列表里当“洞”。
+    var alwaysClearWindowIDs: Set<CGWindowID> {
+        guard window.isVisible else { return [] }
+        return [CGWindowID(window.windowNumber)]
+    }
+
+    /// 设置窗口在 CG 坐标系里的矩形（不可见时为 nil）
+    var alwaysClearRect: CGRect? {
+        guard window.isVisible else { return nil }
+        return Geometry.nsToCG(window.frame, mainHeight: Geometry.mainCG.height)
+    }
+
     func debugScreenChecks() -> String {
         displayChecks.map { "\($0.id):\($0.check.state == .on ? "on" : "off")" }.joined(separator: ",")
     }
