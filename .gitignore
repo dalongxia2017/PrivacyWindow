@@ -1,0 +1,36 @@
+# 构建产物（./build.sh 会重新生成；smoke.py 把 spike/*.swift 编到 build/）
+build/
+mcache/
+*.app/
+*.dmg
+*.zip
+
+# 编译出来的探针二进制（源码在 spike/*.swift）
+spike/probe
+spike/probe3
+spike/timing
+spike/winlist
+spike/winid
+spike/cover
+spike/conflict_probe
+
+# 测试截图与日志
+*.out
+*.log
+spike/shots/
+
+# Python / 编辑器 / 系统
+__pycache__/
+*.pyc
+.DS_Store
+*.swp
+*~
+.idea/
+.vscode/
+.build/
+.venv/
+
+# 本地备份与杂项（不提交）
+backup/
+*.bundle
+*.bak
