@@ -23,22 +23,6 @@ final class OverlayItem {
     let dim = NSView(frame: .zero)
     private(set) var fadingOut = false
     private let settings: SettingsStore
-    /// 块数变化时多出来的块藏起来留着复用，不销毁（见 ScreenOverlay.update）
-    private var shown = true
-
-    /// 屏幕上正在显示的不透明度（动画中取 presentation layer 的值）
-    var displayedAlpha: CGFloat {
-        CGFloat(blur.layer?.presentation()?.opacity ?? Float(blur.alphaValue))
-    }
-
-    var isShown: Bool {
-        get { shown }
-        set {
-            shown = newValue
-            blur.isHidden = !shown || settings.lowPower
-            dim.isHidden = !shown
-        }
-    }
 
     init(settings: SettingsStore) {
         self.settings = settings
@@ -70,7 +54,7 @@ final class OverlayItem {
 
     func applySettings(_ s: SettingsStore) {
         blur.material = s.material.effect
-        blur.isHidden = !shown || s.lowPower   // 低性能模式：不用毛玻璃，只留暗色遮罩
+        blur.isHidden = s.lowPower          // 低性能模式：不用毛玻璃，只留暗色遮罩
         if !isAnimating() { dim.alphaValue = CGFloat(s.overlayDimAlpha) }
     }
 
@@ -88,12 +72,6 @@ final class OverlayItem {
             self.blur.animator().alphaValue = t
             self.dim.animator().alphaValue = dimTarget
         }, completionHandler: completion)
-    }
-
-    /// 不做动画，直接设成遮盖比例 `t`（1 = 完全遮盖）
-    func setAlpha(_ t: CGFloat) {
-        blur.alphaValue = t
-        dim.alphaValue = CGFloat(settings.overlayDimAlpha) * t
     }
 
     /// 停在当前显示值，取消进行中的动画
@@ -160,17 +138,14 @@ enum OverlayLayout {
     /// 被遮窗口伸到别的窗口下面的那部分不能盖：盖了会把上面那个窗口也糊掉。
     /// 所以每个窗口只遮“自己的矩形 减去 z 序在它上面的所有窗口”。焦点窗口不算被遮，
     /// 但它的矩形同样要从下面的窗口里挖掉。
-    /// `clear`：不处理的窗口（白名单 App、小窗、浮动面板、设置窗口），同样要在压着它们的窗口里挖掉。
-    /// 只挖 z 序在它上面的（`order` 更小）：垫在下面的不挖，否则被遮窗口上会漏出一块清晰的洞。
-    static func regions(windows: [WindowInfo], focus: CGWindowID?, clear: [ClearWindow] = []) -> [CGWindowID: [CGRect]] {
+    static func regions(windows: [WindowInfo], focus: CGWindowID?) -> [CGWindowID: [CGRect]] {
         var holes: [CGRect] = []
         var regions: [CGWindowID: [CGRect]] = [:]
         for w in windows {
             if w.id == focus && !w.pinned {
                 holes.append(w.bounds)
             } else {
-                let above = clear.filter { $0.order < w.order }.map(\.bounds)
-                regions[w.id] = RegionMath.subtract(w.bounds, holes + above)
+                regions[w.id] = RegionMath.subtract(w.bounds, holes)
                 holes.append(w.bounds)
             }
         }
@@ -198,7 +173,7 @@ final class ScreenOverlay {
         window.hasShadow = false
         window.ignoresMouseEvents = true          // 点击、拖拽、滚动全部穿透
         window.isMovable = false
-        window.level = NSWindow.Level(rawValue: WindowSnapshot.overlayLevel) // 高于普通窗口，低于 Dock 与菜单栏
+        window.level = NSWindow.Level(rawValue: Int(CGWindowLevelForKey(.floatingWindow)) + 1) // 高于普通窗口，低于 Dock 与菜单栏
         window.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary, .ignoresCycle]
         window.contentView?.wantsLayer = true
     }
@@ -231,28 +206,9 @@ final class ScreenOverlay {
                 // 形状没变只是位置变了：原地挪，不重建，避免拖动窗口时闪烁
                 for (item, rect) in zip(group, rects) { item.frame = rect }
             } else {
-                // 块数变了：在原来的块上增减，不整组重建。
-                // 被遮窗口跟着别的窗口移动时，露出来的形状几乎每帧都在变（被上面的窗口切出的条数变多或变少）；
-                // 整组重建的话新块要从透明开始，画面就会一下一下地闪。
-                let shownAlpha = group.first?.displayedAlpha ?? 0
-                var group = group
-                if group.count > rects.count {
-                    for i in rects.count..<group.count { group[i].isShown = false }
-                }
-                for (i, rect) in rects.enumerated() {
-                    if i < group.count {
-                        group[i].frame = rect
-                        group[i].isShown = true
-                    } else {
-                        let item = OverlayItem(settings: settings)
-                        item.frame = rect
-                        item.setAlpha(shownAlpha)
-                        item.addTo(window.contentView!)
-                        if shownAlpha < 1 && group.first?.fadingOut != true { item.fade(to: 1) }
-                        group.append(item)
-                    }
-                }
-                items[id] = group
+                let wasVisible = group.first.map { $0.blur.alphaValue > 0 } ?? false
+                for item in group { item.cancelAnimations(); item.removeFromSuperview() }
+                items[id] = makeGroup(rects, settings: settings, fadeIn: !wasVisible)
             }
         }
         for (id, rects) in needed where items[id] == nil {
@@ -266,18 +222,14 @@ final class ScreenOverlay {
         }
     }
 
-    /// `fadeIn`：从透明淡入到完全遮盖；否则直接以完全遮盖出现。
     private func makeGroup(_ rects: [CGRect], settings: SettingsStore, fadeIn: Bool) -> [OverlayItem] {
         rects.map { rect in
             let item = OverlayItem(settings: settings)
             item.frame = rect
+            item.blur.alphaValue = 0
+            item.dim.alphaValue = 0
             item.addTo(window.contentView!)
-            if fadeIn {
-                item.setAlpha(0)
-                item.fade(to: 1)
-            } else {
-                item.setAlpha(1)
-            }
+            if fadeIn { item.fade(to: 1) } else { item.fade(to: 1, completion: nil) }
             return item
         }
     }
@@ -332,11 +284,10 @@ final class OverlayManager {
     }
 
     /// `windows`：本帧的可处理窗口（z 序，前 → 后）；`focus`：保持清晰的窗口 id；
-    /// `clear`：不处理但也不能盖住的窗口（z 序，前 → 后）；
     /// `pausedScreens`：完全暂停覆盖的屏幕（例如上面有全屏 App）。
-    func update(windows: [WindowInfo], focus: CGWindowID?, pausedScreens: Set<CGDirectDisplayID>, clear: [ClearWindow] = []) {
+    func update(windows: [WindowInfo], focus: CGWindowID?, pausedScreens: Set<CGDirectDisplayID>) {
         syncScreensIfNeeded()
-        let regions = OverlayLayout.regions(windows: windows, focus: focus, clear: clear)
+        let regions = OverlayLayout.regions(windows: windows, focus: focus)
 
         for (id, overlay) in screens {
             if pausedScreens.contains(id) {

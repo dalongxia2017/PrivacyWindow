@@ -16,8 +16,6 @@ enum SelfTest {
         pausePolicy()
         splitViewLayout()
         pinnedWindows()
-        clearWindows()
-        motionDetector()
         hotKeyTitles()
         stageManagerReader()
         defaultsRoundTrip()
@@ -149,120 +147,6 @@ enum SelfTest {
         // 就算误把黑名单窗口当成焦点，也不能让它清晰
         expect("pinned window never becomes the hole",
                OverlayLayout.regions(windows: [pinned, normal], focus: 2).keys.sorted() == [1, 2])
-    }
-
-    /// MotionDetector：窗口连续自己动、鼠标不动 → 系统动画；鼠标键按着或光标跟着走 → 用户在拖。
-    private static func motionDetector() {
-        let still = CGPoint(x: 10, y: 10)
-        var clock = 0.0
-        func detector() -> MotionDetector { MotionDetector() }
-        /// 窗口在 x 处，光标在 mouse；返回这一帧是否判定为“系统动画中”
-        func frame(_ d: inout MotionDetector, x: CGFloat, mouse: CGPoint = still, button: Bool = false, force: Bool = false) -> Bool {
-            clock += 1.0 / 60
-            let w = WindowInfo(id: 1, bounds: CGRect(x: x, y: 100, width: 300, height: 200), pid: 1, ownerName: "a", bundleID: nil)
-            return d.update(windows: [w], mouse: mouse, buttonPressed: button, force: force, now: clock)
-        }
-        var d = detector()
-        expect("motion: nothing moving", !frame(&d, x: 0))
-        expect("motion: a single jump is not an animation", !frame(&d, x: 40))
-        expect("motion: second frame of the same jump", !frame(&d, x: 40))
-        expect("motion: moving frame 1", !frame(&d, x: 60))
-        expect("motion: moving frame 2", !frame(&d, x: 80))
-        expect("motion: three moving frames without the mouse → animation", frame(&d, x: 100))
-        expect("motion: animation continues while windows still move", frame(&d, x: 120))
-        var held = true
-        for _ in 0..<MotionDetector().stillToLeave - 1 { held = held && frame(&d, x: 120) }
-        expect("motion: one frame before the still threshold it is still animating", held)
-        expect("motion: enough still frames → animation over", !frame(&d, x: 120))
-
-        d = detector()
-        for x in [CGFloat(0), 20, 40, 60, 80] { _ = frame(&d, x: x, button: true) }
-        expect("motion: window moving while the mouse button is held = dragging, not animation", !frame(&d, x: 100, button: true))
-
-        d = detector()
-        for i in 0..<5 { _ = frame(&d, x: CGFloat(i) * 20, mouse: CGPoint(x: 10 + i * 15, y: 10)) }
-        expect("motion: window moving while the cursor moves = dragging, not animation", !frame(&d, x: 100, mouse: CGPoint(x: 85, y: 10)))
-
-        d = detector()
-        expect("motion: forced by the space-changed notification even with nothing moving", frame(&d, x: 0, force: true))
-        expect("motion: forced state persists on the next still frame", frame(&d, x: 0))
-        held = true
-        // 上一行已经用掉一帧静止，再数到阈值前一帧
-        for _ in 0..<MotionDetector().stillToLeave - 2 { held = held && frame(&d, x: 0) }
-        expect("motion: forced state holds until the still threshold", held)
-        expect("motion: forced state ends after the still threshold", !frame(&d, x: 0))
-
-        d = detector()
-        for x in [CGFloat(0), 20, 40, 60] { _ = frame(&d, x: x) }
-        d.reset()
-        expect("motion: reset clears the moving streak", !frame(&d, x: 100))
-
-        var jerk = detector()
-        for i in 0..<6 { _ = frame(&jerk, x: CGFloat(i), mouse: CGPoint(x: CGFloat(i % 2), y: 0)) }
-        expect("motion: a pixel of cursor jitter still counts as an animation", frame(&jerk, x: 100, mouse: CGPoint(x: 1, y: 0)))
-    }
-
-    private static func clearWindows() {
-        let list: [[String: Any]] = [
-            entry(10, 500, 150, 200, 200, pid: 20),                        // 白名单 App 的窗口，压在 B 露出的部分上
-            entry(11, 450, 250, 84, 77, pid: 21, layer: 3),                // 浮动面板
-            entry(1, 0, 0, 400, 300, pid: 1),                              // A：焦点
-            entry(12, 450, 420, 120, 60, pid: 22),                         // layer 0 的小窗（输入法角标一类）
-            entry(2, 200, 200, 400, 300, pid: 2),                          // B：被遮
-            entry(13, 300, 250, 100, 60, pid: 23),                         // 小窗（60 pt 高），垫在 B 下面
-            entry(14, 0, 0, 1800, 1169, pid: 999, layer: 4),               // 本进程的覆盖层
-            entry(15, 250, 260, 100, 100, pid: 999),                       // 本进程的设置窗口，垫在 B 下面
-            entry(16, 0, 0, 1800, 39, pid: 172, layer: 24),                // 菜单栏：在覆盖层上面
-            entry(17, 8, 227, 360, 180, pid: 173, layer: -2147483601),     // 通知小组件：垫在最底下
-        ]
-        let names: [pid_t: (String, String?)] = [1: ("A", "a"), 2: ("B", "b"), 20: ("W", "com.w"), 21: ("F", "f"),
-                                                22: ("S", "s"), 23: ("T", "t"), 999: ("自己", "me")]
-        let info = { (pid: pid_t) -> (String, String?) in names[pid] ?? ("?", nil) }
-        let windows = WindowSnapshot.parse(list, ownPID: 999, whitelist: ["com.w"], blacklist: [], bundleIDForPID: info)
-        expect("clear test setup: A and B are processed", windows.map(\.id) == [1, 2])
-        let clear = WindowSnapshot.clearWindows(in: list, processed: windows, ownPID: 999)
-        // 白名单窗口、浮动面板、下面的设置窗口；不含覆盖层自己、菜单栏、小组件，也不含 layer 0 的小窗
-        expect("clear list = unprocessed windows at or below the overlay level (layer-0 ones must be full-size)",
-               clear.map(\.order) == [0, 1, 7])
-        let regions = OverlayLayout.regions(windows: windows, focus: 1, clear: clear)
-        let covered = regions[2] ?? []
-        func coveredArea(_ rect: CGRect) -> CGFloat {
-            covered.reduce(CGFloat(0)) { $0 + ($1.intersection(rect).isNull ? 0 : $1.intersection(rect).width * $1.intersection(rect).height) }
-        }
-        expect("whitelisted window above a covered window is never covered",
-               coveredArea(CGRect(x: 500, y: 150, width: 200, height: 200)) == 0)
-        expect("floating panel (layer 3) above a covered window is never covered",
-               coveredArea(CGRect(x: 450, y: 250, width: 84, height: 77)) == 0)
-        // 洞是按窗口矩形挖的，比角标本身大得多，看起来就是“光标右边的毛玻璃没了”；所以小窗不挖，盖住就盖住
-        expect("small layer-0 window above a covered window does not punch a hole",
-               coveredArea(CGRect(x: 450, y: 420, width: 120, height: 60)) == 7200)
-        expect("small window below does not punch a hole",
-               coveredArea(CGRect(x: 300, y: 300, width: 100, height: 10)) == 1000)
-        expect("settings window below does not punch a hole",
-               coveredArea(CGRect(x: 250, y: 300, width: 100, height: 60)) == 6000)
-        expect("covered window minus all the windows on top of it",
-               regions[2] == RegionMath.subtract(CGRect(x: 200, y: 200, width: 400, height: 300),
-                                                 [CGRect(x: 0, y: 0, width: 400, height: 300), CGRect(x: 500, y: 150, width: 200, height: 200),
-                                                  CGRect(x: 450, y: 250, width: 84, height: 77)]))
-        // 修复前的行为：不挖这些洞，白名单窗口被盖 15000
-        let before = OverlayLayout.regions(windows: windows, focus: 1)
-        let beforeArea = (before[2] ?? []).reduce(CGFloat(0)) { sum, r in
-            let i = r.intersection(CGRect(x: 500, y: 150, width: 200, height: 200))
-            return sum + (i.isNull ? 0 : i.width * i.height)
-        }
-        expect("regression: without clear windows the whitelisted window got covered", beforeArea == 15000)
-
-        // pid 30/31 的 App 在白名单里（只有 App 规则跳过的、或本进程的 layer-0 窗口才会走到“挖不挖洞”这一步）
-        func clearOrders(_ w: CGFloat, _ h: CGFloat, pid: pid_t, layer: Int = 0) -> [Int] {
-            let l: [[String: Any]] = [entry(1, 0, 0, 400, 300, pid: 1), entry(2, 100, 100, w, h, pid: pid, layer: layer)]
-            let info: (pid_t) -> (name: String, bundleID: String?) = { $0 == 1 ? ("A", "a") : ("W", "com.w") }
-            let parsed = WindowSnapshot.parse(l, ownPID: 999, whitelist: ["com.w"], blacklist: [], bundleIDForPID: info)
-            return WindowSnapshot.clearWindows(in: l, processed: parsed, ownPID: 999).map(\.order)
-        }
-        expect("whitelisted app's badge-sized window (64×64) does not punch a hole", clearOrders(64, 64, pid: 30) == [])
-        expect("layer-0 window one point under minSize does not punch a hole", clearOrders(80, 79, pid: 30) == [])
-        expect("whitelisted app's full-size window punches a hole", clearOrders(80, 80, pid: 30) == [1])
-        expect("small floating window (layer 3) still punches a hole", clearOrders(40, 20, pid: 31, layer: 3) == [1])
     }
 
     private static func hotKeyTitles() {

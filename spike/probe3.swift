@@ -125,29 +125,6 @@ if CommandLine.arguments.contains("--drift") {
     }
 }
 
-// --slide：窗口自己连续移动 50 帧（每帧 3pt，约 0.85s），模拟切换桌面 / 吸附动画这类“不是用户拖着”的移动。
-// 开始和结束时各打一行，结束那行带最终位置（CG 坐标）。
-if CommandLine.arguments.contains("--slide") {
-    let mainHeight = NSScreen.screens[0].frame.height
-    DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
-        print("slide start")
-        fflush(stdout)
-        var frames = 0
-        func step() {
-            frames += 1
-            target.setFrameOrigin(CGPoint(x: 300 + CGFloat(frames) * 3, y: 300))
-            if frames < 50 {
-                DispatchQueue.main.asyncAfter(deadline: .now() + 1.0 / 60, execute: step)
-            } else {
-                let h = target.frame.height
-                print("slide end \(Int(target.frame.minX)) \(Int(mainHeight - target.frame.minY - h)) \(Int(target.frame.width)) \(Int(h))")
-                fflush(stdout)
-            }
-        }
-        step()
-    }
-}
-
 if CommandLine.arguments.contains("--stay") {
     print("staying; target cgBounds see above")
     fflush(stdout)
